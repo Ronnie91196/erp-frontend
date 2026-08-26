@@ -1,0 +1,9 @@
+{
+  "name": "pharma-erp-frontend-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix pharma-frontend run dev --",
+    "build": "npm --prefix pharma-frontend run build",
+    "preview": "npm --prefix pharma-frontend run preview"
+  }
+}
