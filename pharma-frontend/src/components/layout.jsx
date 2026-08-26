@@ -26,9 +26,10 @@ import {
 
 const menuGroups = [
   {
-    key: 'home',
-    label: 'Home',
+    key: 'dashboard',
+    label: 'Dashboard',
     icon: Home,
+    standalone: true,
     items: [{ label: 'Dashboard', to: '/dashboard', icon: Home }],
   },
   {
@@ -37,9 +38,9 @@ const menuGroups = [
     icon: Pill,
     items: [
       { label: 'Drug List', to: '/products', icon: Package },
-      { label: 'Billing Notes', to: '/products', icon: NotebookPen },
-      { label: 'Create Debit Note', to: '/products', icon: FileText },
-      { label: 'Trash', to: '/products', icon: Trash2 },
+      { label: 'Billing Notes', to: '/modules/billing-notes', icon: NotebookPen },
+      { label: 'Create Debit Note', to: '/modules/create-debit-note', icon: FileText },
+      { label: 'Trash', to: '/modules/drugs-trash', icon: Trash2 },
     ],
   },
   {
@@ -49,7 +50,7 @@ const menuGroups = [
     items: [
       { label: 'Customer List', to: '/customers', icon: Users },
       { label: 'Ledger', to: '/customers/ledger', icon: WalletCards },
-      { label: 'Trash', to: '/customers', icon: Trash2 },
+      { label: 'Trash', to: '/modules/customers-trash', icon: Trash2 },
     ],
   },
   {
@@ -59,6 +60,7 @@ const menuGroups = [
     items: [
       { label: 'Supplier List', to: '/suppliers', icon: Truck },
       { label: 'Ledger', to: '/suppliers/ledger', icon: BadgeDollarSign },
+      { label: 'Trash', to: '/modules/suppliers-trash', icon: Trash2 },
     ],
   },
   {
@@ -67,9 +69,9 @@ const menuGroups = [
     icon: ShoppingCart,
     items: [
       { label: 'Sales List', to: '/sales', icon: ReceiptText },
-      { label: 'Add Sale', to: '/sales', icon: Plus },
-      { label: 'Returned', to: '/sales', icon: ArrowLeftRight },
-      { label: 'Drafts', to: '/sales', icon: FileText },
+      { label: 'Add Sale', to: '/sales/add', icon: Plus },
+      { label: 'Returned', to: '/modules/sales-returned', icon: ArrowLeftRight },
+      { label: 'Drafts', to: '/modules/sales-drafts', icon: FileText },
     ],
   },
   {
@@ -78,9 +80,39 @@ const menuGroups = [
     icon: BadgeDollarSign,
     items: [
       { label: 'Purchase List', to: '/purchases', icon: ReceiptText },
-      { label: 'Purchase Orders', to: '/purchases', icon: FileText },
-      { label: 'Add Purchase', to: '/purchases', icon: Plus },
-      { label: 'Restocks', to: '/purchases', icon: Truck },
+      { label: 'Purchase Orders', to: '/modules/purchase-orders', icon: FileText },
+      { label: 'Add Purchase', to: '/purchases/add', icon: Plus },
+      { label: 'Restocks', to: '/modules/restocks', icon: Truck },
+      { label: 'Trash', to: '/modules/purchases-trash', icon: Trash2 },
+      { label: 'Drafts', to: '/modules/purchase-drafts', icon: FileText },
+    ],
+  },
+  {
+    key: 'bulk-invoicing',
+    label: 'Bulk Invoicing',
+    icon: FileText,
+    items: [{ label: 'Sales Invoice', to: '/modules/sales-invoice', icon: ReceiptText }],
+  },
+  {
+    key: 'advanced-reports',
+    label: 'Advanced Reports',
+    icon: NotebookPen,
+    items: [
+      { label: 'Sales Report', to: '/modules/advanced-sales-report', icon: ReceiptText },
+      { label: 'Collection Report', to: '/modules/collection-report', icon: WalletCards },
+      { label: 'GST Returns', to: '/modules/gst-returns', icon: FileText },
+      { label: 'Ayushman Sales', to: '/modules/ayushman-sales', icon: BadgeDollarSign },
+    ],
+  },
+  {
+    key: 'reports-old',
+    label: 'Reports (old)',
+    icon: FileText,
+    items: [
+      { label: 'NRX', to: '/modules/nrx', icon: FileText },
+      { label: 'Sales Report', to: '/modules/old-sales-report', icon: ReceiptText },
+      { label: 'Purchases Report', to: '/modules/purchases-report', icon: ReceiptText },
+      { label: 'Schedule Drug Reports', to: '/modules/schedule-drug-reports', icon: NotebookPen },
     ],
   },
 ];
@@ -88,7 +120,7 @@ const menuGroups = [
 export default function Layout({ children }) {
   const nav = useNavigate();
   const [open, setOpen] = React.useState(false);
-  const [openMenu, setOpenMenu] = React.useState('home');
+  const [expandedMenus, setExpandedMenus] = React.useState([]);
   const user = JSON.parse(localStorage.getItem('pharma_user') || 'null');
 
   const logout = () => {
@@ -97,7 +129,9 @@ export default function Layout({ children }) {
   };
 
   const toggleMenu = (key) => {
-    setOpenMenu((current) => (current === key ? '' : key));
+    setExpandedMenus((current) => (
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    ));
   };
 
   return (
@@ -115,8 +149,22 @@ export default function Layout({ children }) {
         </div>
 
         <nav className="sidebar-nav">
-          {menuGroups.map(({ key, label, icon: Icon, items }) => {
-            const isOpen = openMenu === key;
+          {menuGroups.map(({ key, label, icon: Icon, items, standalone }) => {
+            const isOpen = expandedMenus.includes(key);
+
+            if (standalone) {
+              return (
+                <NavLink
+                  key={key}
+                  onClick={() => setOpen(false)}
+                  className={({ isActive }) => `nav-link standalone-link ${isActive ? 'active' : ''}`}
+                  to={items[0].to}
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </NavLink>
+              );
+            }
 
             return (
               <div className="nav-section" key={key}>
