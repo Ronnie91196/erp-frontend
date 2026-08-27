@@ -12,6 +12,7 @@ import Batches from "./pages/Batches";
 import ProductSuppliers from "./pages/ProductSuppliers";
 import Suppliers from "./pages/Suppliers";
 import Customers from "./pages/Customers";
+import SharedCustomerLedger from "./pages/SharedCustomerLedger";
 import Users from "./pages/Users";
 import Purchases from "./pages/Purchases";
 import Sales from "./pages/Sales";
@@ -38,6 +39,7 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/shared/customer-ledger/:token" element={<SharedCustomerLedger />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route
         path="/dashboard"
