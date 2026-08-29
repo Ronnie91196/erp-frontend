@@ -175,7 +175,7 @@ function App() {
       />
       <Route
         path="/modules/create-debit-note"
-        element={<Placeholder title="Create Debit Note" />}
+        element={<Purchases />}
       />
       <Route
         path="/modules/drugs-trash"
@@ -211,7 +211,11 @@ function App() {
       />
       <Route
         path="/modules/purchase-drafts"
-        element={<Placeholder title="Purchase Drafts" />}
+        element={
+          <Guard>
+            <Purchases />
+          </Guard>
+        }
       />
       <Route
         path="/modules/sales-invoice"

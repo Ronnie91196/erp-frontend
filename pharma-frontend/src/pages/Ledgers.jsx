@@ -38,26 +38,30 @@ function CustomerAccountSearch({
       </div>
       {(showList || accountSearch.trim()) && (
         <>
-            {showList && <div className="account-list-label">Customers</div>}
+          {showList && (
+            <div className="account-list-label">
+              {accountLabel === "customer" ? "Customers" : "Suppliers"}
+            </div>
+          )}
           <div className={`account-suggestions ${showList ? "customer-account-list" : ""}`}>
-          {accountSuggestions.length ? (
-            accountSuggestions.map((item) => (
-              <button
-                type="button"
+            {accountSuggestions.length ? (
+              accountSuggestions.map((item) => (
+                <button
+                  type="button"
                   key={item.id}
                   className={item.id === id ? "selected" : ""}
-                onClick={() => {
-                  setId(item.id);
-                  setAccountSearch(item.name);
-                }}
-              >
-                {item.name}
-                <small>{item.phone || item.email || "Customer account"}</small>
-              </button>
-            ))
-          ) : (
-            <p>No matching customers found.</p>
-          )}
+                  onClick={() => {
+                    setId(item.id);
+                    setAccountSearch(item.name);
+                  }}
+                >
+                  {item.name}
+                  <small>{item.phone || item.email || `${accountLabel} account`}</small>
+                </button>
+              ))
+            ) : (
+              <p>No matching {accountLabel === "customer" ? "customers" : "suppliers"} found.</p>
+            )}
           </div>
         </>
       )}
@@ -194,7 +198,7 @@ export default function Ledgers({ type }) {
               setAccountSearch={setAccountSearch}
               accountSuggestions={accountSuggestions}
               accountLabel={isCustomer ? "customer" : "supplier"}
-              showList={isCustomer}
+              showList={true}
             />
           </label>
           <Button

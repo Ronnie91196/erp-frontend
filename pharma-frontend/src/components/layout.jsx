@@ -1,5 +1,5 @@
 import React from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Home,
   Pill,
@@ -39,7 +39,6 @@ const menuGroups = [
     items: [
       { label: 'Drug List', to: '/products', icon: Package },
       { label: 'Billing Notes', to: '/modules/billing-notes', icon: NotebookPen },
-      { label: 'Create Debit Note', to: '/modules/create-debit-note', icon: FileText },
       { label: 'Trash', to: '/modules/drugs-trash', icon: Trash2 },
     ],
   },
@@ -81,6 +80,7 @@ const menuGroups = [
     items: [
       { label: 'Purchase List', to: '/purchases', icon: ReceiptText },
       { label: 'Purchase Orders', to: '/modules/purchase-orders', icon: FileText },
+      { label: 'Purchase Returns', to: '/modules/create-debit-note', icon: ArrowLeftRight },
       { label: 'Add Purchase', to: '/purchases/add', icon: Plus },
       { label: 'Restocks', to: '/modules/restocks', icon: Truck },
       { label: 'Trash', to: '/modules/purchases-trash', icon: Trash2 },
@@ -119,9 +119,18 @@ const menuGroups = [
 
 export default function Layout({ children }) {
   const nav = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = React.useState(false);
   const [expandedMenus, setExpandedMenus] = React.useState([]);
   const user = JSON.parse(localStorage.getItem('pharma_user') || 'null');
+
+  const isPurchaseAddRoute = location.pathname === '/purchases/add' || location.pathname.startsWith('/purchases/add/') || location.pathname === '/modules/create-debit-note';
+
+  React.useEffect(() => {
+    if (isPurchaseAddRoute) {
+      setOpen(false);
+    }
+  }, [isPurchaseAddRoute]);
 
   const logout = () => {
     localStorage.clear();
@@ -136,7 +145,7 @@ export default function Layout({ children }) {
 
   return (
     <div className="app-shell">
-      <aside className={open ? 'sidebar open' : 'sidebar'}>
+      <aside className={isPurchaseAddRoute ? 'sidebar compact' : open ? 'sidebar open' : 'sidebar'}>
         <div className="brand-wrap">
           <div className="brand-badge">M</div>
           <div className="brand-copy">
@@ -212,7 +221,7 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      <main className="main-shell">
+      <main className={isPurchaseAddRoute ? 'main-shell compact-shell' : 'main-shell'}>
         <header className="topbar">
           <button type="button" className="menu-button" onClick={() => setOpen(true)}>
             <Menu size={18} />
