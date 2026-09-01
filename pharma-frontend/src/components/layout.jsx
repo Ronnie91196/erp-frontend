@@ -11,6 +11,8 @@ import {
   Search,
   Bell,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   LogOut,
   Menu,
@@ -22,6 +24,13 @@ import {
   Trash2,
   WalletCards,
   Plus,
+  Stethoscope,
+  Percent,
+  Layers,
+  PieChart,
+  Award,
+  TrendingUp,
+  BarChart3,
 } from 'lucide-react';
 
 const menuGroups = [
@@ -40,6 +49,14 @@ const menuGroups = [
       { label: 'Drug List', to: '/products', icon: Package },
       { label: 'Billing Notes', to: '/modules/billing-notes', icon: NotebookPen },
       { label: 'Trash', to: '/modules/drugs-trash', icon: Trash2 },
+    ],
+  },
+  {
+    key: 'doctors',
+    label: 'Doctors',
+    icon: Stethoscope,
+    items: [
+      { label: 'Doctor List', to: '/doctors', icon: Stethoscope },
     ],
   },
   {
@@ -79,10 +96,8 @@ const menuGroups = [
     icon: BadgeDollarSign,
     items: [
       { label: 'Purchase List', to: '/purchases', icon: ReceiptText },
-      { label: 'Purchase Orders', to: '/modules/purchase-orders', icon: FileText },
-      { label: 'Purchase Returns', to: '/modules/create-debit-note', icon: ArrowLeftRight },
+      { label: 'Purchase Returns', to: '/modules/purchase-returns', icon: ArrowLeftRight },
       { label: 'Add Purchase', to: '/purchases/add', icon: Plus },
-      { label: 'Restocks', to: '/modules/restocks', icon: Truck },
       { label: 'Trash', to: '/modules/purchases-trash', icon: Trash2 },
       { label: 'Drafts', to: '/modules/purchase-drafts', icon: FileText },
     ],
@@ -94,26 +109,11 @@ const menuGroups = [
     items: [{ label: 'Sales Invoice', to: '/modules/sales-invoice', icon: ReceiptText }],
   },
   {
-    key: 'advanced-reports',
-    label: 'Advanced Reports',
-    icon: NotebookPen,
-    items: [
-      { label: 'Sales Report', to: '/modules/advanced-sales-report', icon: ReceiptText },
-      { label: 'Collection Report', to: '/modules/collection-report', icon: WalletCards },
-      { label: 'GST Returns', to: '/modules/gst-returns', icon: FileText },
-      { label: 'Ayushman Sales', to: '/modules/ayushman-sales', icon: BadgeDollarSign },
-    ],
-  },
-  {
-    key: 'reports-old',
-    label: 'Reports (old)',
-    icon: FileText,
-    items: [
-      { label: 'NRX', to: '/modules/nrx', icon: FileText },
-      { label: 'Sales Report', to: '/modules/old-sales-report', icon: ReceiptText },
-      { label: 'Purchases Report', to: '/modules/purchases-report', icon: ReceiptText },
-      { label: 'Schedule Drug Reports', to: '/modules/schedule-drug-reports', icon: NotebookPen },
-    ],
+    key: 'reports-hub',
+    label: 'Reports Hub',
+    icon: BarChart3,
+    standalone: true,
+    items: [{ label: 'Reports Hub', to: '/modules/reports-hub', icon: BarChart3 }],
   },
 ];
 
@@ -121,14 +121,18 @@ export default function Layout({ children }) {
   const nav = useNavigate();
   const location = useLocation();
   const [open, setOpen] = React.useState(false);
+  const [isCollapsed, setIsCollapsed] = React.useState(false);
   const [expandedMenus, setExpandedMenus] = React.useState([]);
   const user = JSON.parse(localStorage.getItem('pharma_user') || 'null');
 
-  const isPurchaseAddRoute = location.pathname === '/purchases/add' || location.pathname.startsWith('/purchases/add/') || location.pathname === '/modules/create-debit-note';
+  const isPurchaseAddRoute = location.pathname === '/purchases/add' || location.pathname.startsWith('/purchases/add/') || location.pathname === '/modules/create-debit-note' || location.pathname === '/sales/add' || location.pathname.startsWith('/sales/add/');
 
   React.useEffect(() => {
     if (isPurchaseAddRoute) {
+      setIsCollapsed(true);
       setOpen(false);
+    } else {
+      setIsCollapsed(false);
     }
   }, [isPurchaseAddRoute]);
 
@@ -143,9 +147,23 @@ export default function Layout({ children }) {
     ));
   };
 
+  const sidebarClass = isCollapsed ? 'sidebar hidden-sidebar' : open ? 'sidebar open' : 'sidebar';
+  const mainClass = isCollapsed ? 'main-shell full-shell' : 'main-shell';
+
   return (
     <div className="app-shell">
-      <aside className={isPurchaseAddRoute ? 'sidebar compact' : open ? 'sidebar open' : 'sidebar'}>
+      {/* Floating Toggle Button on the screen edge */}
+      <button
+        type="button"
+        className={`sidebar-floating-toggle ${isCollapsed ? 'collapsed' : 'expanded'}`}
+        onClick={() => setIsCollapsed((prev) => !prev)}
+        title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+        aria-label={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+      >
+        {isCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
+      </button>
+
+      <aside className={sidebarClass}>
         <div className="brand-wrap">
           <div className="brand-badge">M</div>
           <div className="brand-copy">
@@ -221,7 +239,7 @@ export default function Layout({ children }) {
         </div>
       </aside>
 
-      <main className={isPurchaseAddRoute ? 'main-shell compact-shell' : 'main-shell'}>
+      <main className={mainClass}>
         <header className="topbar">
           <button type="button" className="menu-button" onClick={() => setOpen(true)}>
             <Menu size={18} />

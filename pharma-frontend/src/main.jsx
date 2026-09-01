@@ -12,15 +12,41 @@ import Batches from "./pages/Batches";
 import ProductSuppliers from "./pages/ProductSuppliers";
 import Suppliers from "./pages/Suppliers";
 import Customers from "./pages/Customers";
+import Doctors from "./pages/Doctors";
 import SharedCustomerLedger from "./pages/SharedCustomerLedger";
 import Users from "./pages/Users";
 import Purchases from "./pages/Purchases";
+import PurchaseReturns from "./pages/PurchaseReturns";
+import SalesReturns from "./pages/SalesReturns";
+import GstReturns from "./pages/GstReturns";
+import CollectionReport from "./pages/CollectionReport";
+import ScheduleDrugs from "./pages/ScheduleDrugs";
+import Restocks from "./pages/Restocks";
+import BillingNotes from "./pages/BillingNotes";
+import AdvancedSalesReport from "./pages/AdvancedSalesReport";
+import PurchasesReport from "./pages/PurchasesReport";
+import BulkInvoicing from "./pages/BulkInvoicing";
+import ReportsHub from "./pages/ReportsHub";
+import MarginReports from "./pages/MarginReports";
+import StockReports from "./pages/StockReports";
+import EntelligentReports from "./pages/EntelligentReports";
+import OthersReports from "./pages/OthersReports";
+import AccountingReports from "./pages/AccountingReports";
 import Sales from "./pages/Sales";
 import Inventory from "./pages/Inventory";
 import Ledgers from "./pages/Ledgers";
 import ApiConsole from "./pages/ApiConsole";
 import ModulePlaceholder from "./pages/ModulePlaceholder";
-const qc = new QueryClient();
+const qc = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 1000 * 30, // 30 seconds fresh cache
+      gcTime: 1000 * 60 * 10, // 10 minutes garbage collection time
+      refetchOnWindowFocus: false, // Prevent excessive refetches on tab switch
+      retry: 1, // Single retry on transient network errors
+    },
+  },
+});
 function Guard({ children }) {
   return localStorage.getItem("pharma_token") ? (
     <Layout>{children}</Layout>
@@ -98,6 +124,14 @@ function App() {
         }
       />
       <Route
+        path="/doctors/*"
+        element={
+          <Guard>
+            <Doctors />
+          </Guard>
+        }
+      />
+      <Route
         path="/users/*"
         element={
           <Guard>
@@ -171,7 +205,11 @@ function App() {
       />
       <Route
         path="/modules/billing-notes"
-        element={<Placeholder title="Billing Notes" />}
+        element={
+          <Guard>
+            <BillingNotes />
+          </Guard>
+        }
       />
       <Route
         path="/modules/create-debit-note"
@@ -191,19 +229,19 @@ function App() {
       />
       <Route
         path="/modules/sales-returned"
-        element={<Placeholder title="Returned Sales" />}
+        element={
+          <Guard>
+            <SalesReturns />
+          </Guard>
+        }
       />
       <Route
         path="/modules/sales-drafts"
-        element={<Placeholder title="Sales Drafts" />}
-      />
-      <Route
-        path="/modules/purchase-orders"
-        element={<Placeholder title="Purchase Orders" />}
-      />
-      <Route
-        path="/modules/restocks"
-        element={<Placeholder title="Restocks" />}
+        element={
+          <Guard>
+            <Sales />
+          </Guard>
+        }
       />
       <Route
         path="/modules/purchases-trash"
@@ -218,38 +256,126 @@ function App() {
         }
       />
       <Route
+        path="/modules/purchase-returns"
+        element={
+          <Guard>
+            <PurchaseReturns />
+          </Guard>
+        }
+      />
+      <Route
         path="/modules/sales-invoice"
-        element={<Placeholder title="Sales Invoice" />}
+        element={
+          <Guard>
+            <BulkInvoicing />
+          </Guard>
+        }
       />
       <Route
         path="/modules/advanced-sales-report"
-        element={<Placeholder title="Sales Report" />}
+        element={
+          <Guard>
+            <AdvancedSalesReport />
+          </Guard>
+        }
       />
       <Route
         path="/modules/collection-report"
-        element={<Placeholder title="Collection Report" />}
+        element={
+          <Guard>
+            <CollectionReport />
+          </Guard>
+        }
       />
       <Route
         path="/modules/gst-returns"
-        element={<Placeholder title="GST Returns" />}
+        element={
+          <Guard>
+            <GstReturns />
+          </Guard>
+        }
       />
       <Route
         path="/modules/ayushman-sales"
         element={<Placeholder title="Ayushman Sales" />}
       />
-      <Route path="/modules/nrx" element={<Placeholder title="NRX" />} />
+      <Route
+        path="/modules/nrx"
+        element={
+          <Guard>
+            <ScheduleDrugs initialType="NRX" />
+          </Guard>
+        }
+      />
       <Route
         path="/modules/old-sales-report"
-        element={<Placeholder title="Sales Report" />}
+        element={
+          <Guard>
+            <AdvancedSalesReport />
+          </Guard>
+        }
       />
       <Route
         path="/modules/purchases-report"
-        element={<Placeholder title="Purchases Report" />}
+        element={
+          <Guard>
+            <PurchasesReport />
+          </Guard>
+        }
       />
       <Route
         path="/modules/schedule-drug-reports"
-        element={<Placeholder title="Schedule Drug Reports" />}
+        element={
+          <Guard>
+            <ScheduleDrugs initialType="ALL" />
+          </Guard>
+        }
       />
+      {/* Reports Hub Central Dashboard */}
+      <Route path="/modules/reports-hub" element={<Guard><ReportsHub /></Guard>} />
+      <Route path="/reports" element={<Guard><ReportsHub /></Guard>} />
+
+      {/* Margin Reports Routes */}
+      <Route path="/modules/margin-reports" element={<Guard><MarginReports defaultTab="item" /></Guard>} />
+      <Route path="/modules/item-wise-margin" element={<Guard><MarginReports defaultTab="item" /></Guard>} />
+      <Route path="/modules/bill-item-wise-margin" element={<Guard><MarginReports defaultTab="bill-item" /></Guard>} />
+      <Route path="/modules/purchase-analysis" element={<Guard><MarginReports defaultTab="purchase-analysis" /></Guard>} />
+
+      {/* Stock Reports Routes */}
+      <Route path="/modules/stock-reports" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/expiry-report" element={<Guard><StockReports defaultTab="expiry" /></Guard>} />
+      <Route path="/modules/non-moving-items" element={<Guard><StockReports defaultTab="non-moving" /></Guard>} />
+      <Route path="/modules/item-batch-wise-stock" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/inventory-ageing" element={<Guard><StockReports defaultTab="inventory-ageing" /></Guard>} />
+      <Route path="/modules/item-wise-stock-movement" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/item-wise-closing-stock" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/annual-audit" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/stock-adjustment" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/inventory-reconciliation" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/item-mapping-logs" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+      <Route path="/modules/oversold-overbought" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+
+      {/* eNtelligent Reports Routes */}
+      <Route path="/modules/entelligent-reports" element={<Guard><EntelligentReports defaultTab="monthly-overview" /></Guard>} />
+      <Route path="/modules/monthly-sales-overview" element={<Guard><EntelligentReports defaultTab="monthly-overview" /></Guard>} />
+      <Route path="/modules/top-selling-items" element={<Guard><EntelligentReports defaultTab="top-selling" /></Guard>} />
+      <Route path="/modules/top-customers" element={<Guard><EntelligentReports defaultTab="top-customers" /></Guard>} />
+      <Route path="/modules/top-distributors" element={<Guard><EntelligentReports defaultTab="top-distributors" /></Guard>} />
+      <Route path="/modules/monthly-stock-valuation" element={<Guard><StockReports defaultTab="item-batch" /></Guard>} />
+
+      {/* Others Reports Routes */}
+      <Route path="/modules/others-reports" element={<Guard><OthersReports defaultTab="doctor-summary" /></Guard>} />
+      <Route path="/modules/doctor-item-summary" element={<Guard><OthersReports defaultTab="doctor-summary" /></Guard>} />
+      <Route path="/modules/schedule-report" element={<Guard><ScheduleDrugs initialType="ALL" /></Guard>} />
+      <Route path="/modules/company-items-analysis" element={<Guard><EntelligentReports defaultTab="top-selling" /></Guard>} />
+      <Route path="/modules/shortbook-reminders" element={<Guard><StockReports defaultTab="non-moving" /></Guard>} />
+      <Route path="/modules/staff-wise-activity" element={<Guard><OthersReports defaultTab="staff-activity" /></Guard>} />
+      <Route path="/modules/extra-charges-report" element={<Guard><OthersReports defaultTab="sales-summary" /></Guard>} />
+      <Route path="/modules/sales-summary-report" element={<Guard><OthersReports defaultTab="sales-summary" /></Guard>} />
+
+      {/* Accounting Reports Routes */}
+      <Route path="/modules/accounting-reports" element={<Guard><AccountingReports /></Guard>} />
+
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
