@@ -772,7 +772,7 @@ body {
 
 .search-box {
   flex: 1;
-  max-width: 620px;
+  max-width: 480px;
   display: flex;
   align-items: center;
   gap: 8px;

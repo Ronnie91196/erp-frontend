@@ -14,6 +14,7 @@ import Suppliers from "./pages/Suppliers";
 import Customers from "./pages/Customers";
 import Doctors from "./pages/Doctors";
 import SharedCustomerLedger from "./pages/SharedCustomerLedger";
+import SharedCustomerInvoice from "./pages/shared/SharedCustomerInvoice";
 import Users from "./pages/Users";
 import Purchases from "./pages/Purchases";
 import PurchaseReturns from "./pages/PurchaseReturns";
@@ -37,6 +38,11 @@ import Inventory from "./pages/Inventory";
 import Ledgers from "./pages/Ledgers";
 import ApiConsole from "./pages/ApiConsole";
 import ModulePlaceholder from "./pages/ModulePlaceholder";
+import DrugsTrash from "./pages/trash/DrugsTrash";
+import CustomersTrash from "./pages/trash/CustomersTrash";
+import SuppliersTrash from "./pages/trash/SuppliersTrash";
+import PurchasesTrash from "./pages/trash/PurchasesTrash";
+import AyushmanSales from "./pages/sales/AyushmanSales";
 const qc = new QueryClient({
   defaultOptions: {
     queries: {
@@ -66,6 +72,8 @@ function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/shared/customer-ledger/:token" element={<SharedCustomerLedger />} />
+      <Route path="/p/bill/:id" element={<SharedCustomerInvoice />} />
+      <Route path="/shared/invoice/:id" element={<SharedCustomerInvoice />} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route
         path="/dashboard"
@@ -164,6 +172,14 @@ function App() {
         }
       />
       <Route
+        path="/sales/refill-reminders"
+        element={
+          <Guard>
+            <Sales />
+          </Guard>
+        }
+      />
+      <Route
         path="/stock/*"
         element={
           <Guard>
@@ -217,15 +233,27 @@ function App() {
       />
       <Route
         path="/modules/drugs-trash"
-        element={<Placeholder title="Drugs Trash" />}
+        element={
+          <Guard>
+            <DrugsTrash />
+          </Guard>
+        }
       />
       <Route
         path="/modules/customers-trash"
-        element={<Placeholder title="Customers Trash" />}
+        element={
+          <Guard>
+            <CustomersTrash />
+          </Guard>
+        }
       />
       <Route
         path="/modules/suppliers-trash"
-        element={<Placeholder title="Suppliers Trash" />}
+        element={
+          <Guard>
+            <SuppliersTrash />
+          </Guard>
+        }
       />
       <Route
         path="/modules/sales-returned"
@@ -245,7 +273,11 @@ function App() {
       />
       <Route
         path="/modules/purchases-trash"
-        element={<Placeholder title="Purchases Trash" />}
+        element={
+          <Guard>
+            <PurchasesTrash />
+          </Guard>
+        }
       />
       <Route
         path="/modules/purchase-drafts"
@@ -297,7 +329,11 @@ function App() {
       />
       <Route
         path="/modules/ayushman-sales"
-        element={<Placeholder title="Ayushman Sales" />}
+        element={
+          <Guard>
+            <AyushmanSales />
+          </Guard>
+        }
       />
       <Route
         path="/modules/nrx"
