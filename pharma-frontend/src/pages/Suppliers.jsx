@@ -12,6 +12,7 @@ import {
   money,
   date,
 } from "../components/ui";
+import Pagination from "../components/Pagination";
 import {
   Archive,
   ArrowDown,
@@ -64,7 +65,10 @@ export default function Suppliers() {
   const [selected, setSelected] = React.useState(null);
   const [edit, setEdit] = React.useState(null);
   const [show, setShow] = React.useState(false);
+  const [searchInput, setSearchInput] = React.useState("");
   const [search, setSearch] = React.useState("");
+  const [page, setPage] = React.useState(1);
+  const [limit, setLimit] = React.useState(25);
   const [filter, setFilter] = React.useState("all");
   const [showOutstanding, setShowOutstanding] = React.useState(false);
   const [visibleMetrics, setVisibleMetrics] = React.useState({});
@@ -76,10 +80,37 @@ export default function Suppliers() {
   const [exportColumns, setExportColumns] = React.useState(['name', 'phone', 'email', 'address', 'gstin', 'outstanding']);
   const blank = Object.fromEntries(fields.map(([key]) => [key, ""]));
   const [form, setForm] = React.useState(blank);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   const query = useQuery({
-    queryKey: ["suppliers"],
-    queryFn: async () => unwrap(await api.get("/suppliers")),
+    queryKey: ["suppliers", search, page, limit],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(limit));
+      if (search) params.append('search', search);
+      const res = await api.get(`/suppliers?${params.toString()}`);
+      return res.data;
+    },
   });
+
+  const rawSuppliers = Array.isArray(query.data?.data)
+    ? query.data.data
+    : (Array.isArray(query.data) ? query.data : []);
+
+  const pagination = query.data?.pagination || {
+    total: rawSuppliers.length,
+    page,
+    limit,
+    totalPages: Math.ceil(rawSuppliers.length / limit) || 1,
+  };
   const save = useMutation({
     mutationFn: (data) =>
       edit
@@ -108,7 +139,7 @@ export default function Suppliers() {
       status: form.status || edit?.status || "ACTIVE",
     });
   };
-  const suppliers = query.data || [];
+  const suppliers = rawSuppliers;
   const filteredSuppliers = suppliers
     .filter((supplier) => {
       const haystack =
@@ -232,8 +263,8 @@ export default function Suppliers() {
         <div className="supplier-global-search">
           <Search size={17} />
           <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
             placeholder="Search in names, phones, emails or addresses..."
           />
           <kbd>/</kbd>
@@ -433,6 +464,13 @@ export default function Suppliers() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          pagination={pagination}
+          onPageChange={(p) => setPage(p)}
+          onLimitChange={(l) => { setLimit(l); setPage(1); }}
+          pageSizeOptions={[10, 25, 50, 100]}
+          itemLabel="suppliers"
+        />
       </div>
       {selected && (
         <SupplierDetail supplier={selected} close={() => setSelected(null)} />

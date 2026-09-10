@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api, { apiError } from '../lib/api';
 import { Input, Button } from '../components/ui';
 import { Eye, EyeOff, ShieldCheck, Activity, ArrowRight } from 'lucide-react';
+import appLogo from '../assets/appLogo.png';
 
 export default function Login() {
   const nav = useNavigate();
@@ -32,10 +33,50 @@ export default function Login() {
     <div className="login">
       <div className="loginVisual">
         <div className="brandBlock">
-          <div className="brandBadge">M</div>
+          <div
+            style={{
+              width: '58px',
+              height: '58px',
+              borderRadius: '16px',
+              background: '#ffffff',
+              padding: '3px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25), 0 0 0 2px rgba(255,255,255,0.6)',
+              position: 'relative',
+              flexShrink: 0,
+              overflow: 'hidden'
+            }}
+          >
+            <img
+              src={appLogo}
+              alt="SSDN PHARMAORA"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain'
+              }}
+            />
+          </div>
+
           <div className="brandText">
-            <strong>MediFlux</strong>
-            <span>Har smart pharmacy ki pehchaan!</span>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px' }}>
+              <span style={{ fontSize: '1.4rem', fontWeight: 900, letterSpacing: '0.12em', color: '#5eead4', textTransform: 'uppercase', fontFamily: "'Outfit', sans-serif" }}>
+                SSDN
+              </span>
+              <strong style={{ fontSize: '1.9rem', color: '#ffffff', letterSpacing: '-0.02em', fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                PHARMAORA
+              </strong>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '10px', fontWeight: 800, color: '#fcd34d', letterSpacing: '0.1em', textTransform: 'uppercase', background: 'rgba(252, 211, 77, 0.16)', padding: '2px 7px', borderRadius: '4px', border: '1px solid rgba(252, 211, 77, 0.35)' }}>
+                BY OTODDY
+              </span>
+              <span style={{ fontSize: '11px', color: '#99f6e4', fontWeight: 600 }}>
+                Intelligent Pharmacy Ecosystem
+              </span>
+            </div>
           </div>
         </div>
 
@@ -129,7 +170,7 @@ export default function Login() {
           </button>
 
           <p className="signupPrompt">
-            Not a MediFlux user? <a href="/registration">Sign Up</a>
+            New to SSDN PHARMAORA? <a href="/registration">Sign Up</a>
           </p>
 
           <div className="footerLinks">

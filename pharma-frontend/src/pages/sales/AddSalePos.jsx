@@ -3,9 +3,11 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   RotateCcw, Save,
-  User, ChevronLeft, Upload, Plus
+  User, ChevronLeft, Upload, Plus, Printer
 } from 'lucide-react';
-import api, { unwrap } from '../../lib/api';
+import api, { unwrap, apiError } from '../../lib/api';
+import { generateClassicPrintHtml, getPharmaPack, getProductDosageCategory } from '../../utils/classicPrintSlip';
+import PrintFormatModal from '../../components/PrintFormatModal';
 
 function money(value) {
   return new Intl.NumberFormat('en-IN', {
@@ -16,6 +18,69 @@ function money(value) {
   }).format(Number(value || 0));
 }
 
+const isTabletOrCapsule = (row) => Boolean(getProductDosageCategory(row));
+
+export function calculateMedicineFinishDate(cartItem, frequencyStr, saleDate = new Date()) {
+  if (!cartItem) return { reminderDate: '', daysOfSupply: 1 };
+
+  try {
+    const qty = Math.max(1, Number(cartItem.qty || cartItem.quantity || 1));
+    const packStr = String(cartItem.pack || cartItem.product?.pack || cartItem.packaging?.name || '').toUpperCase();
+    const prodName = String(cartItem.itemName || cartItem.name || cartItem.product?.name || '').toUpperCase();
+    const form = String(cartItem.dosageForm || cartItem.product?.dosageForm || '').toUpperCase();
+
+    // Safely extract units
+    let unitsPerPack = Number(cartItem.conversionToBase) || 10;
+    let totalDosesAvailable = unitsPerPack * qty;
+
+    const stripMatch = packStr.match(/(?:1X)?(\d+)/i) || prodName.match(/(?:1X)?(\d+)\s*(?:TAB|CAP)/i);
+    const mlMatch = packStr.match(/(\d+)\s*ML/i) || prodName.match(/(\d+)\s*ML/i);
+    const gmMatch = packStr.match(/(\d+)\s*GM/i) || prodName.match(/(\d+)\s*GM/i);
+
+    let isLiquid = form.includes('SYRUP') || form.includes('SUSP') || form.includes('DROP') || prodName.includes('SYRUP');
+
+    if (isLiquid && mlMatch) {
+      unitsPerPack = Number(mlMatch[1]);
+      totalDosesAvailable = Math.max(1, Math.floor((unitsPerPack * qty) / 5)); // 5ml avg dose
+    } else if (gmMatch) {
+      unitsPerPack = Number(gmMatch[1]);
+      totalDosesAvailable = qty * 14; // 1 ointment tube ~ 14 applications
+    } else if (stripMatch) {
+      unitsPerPack = Number(stripMatch[1]);
+      totalDosesAvailable = unitsPerPack * qty;
+    } else if (cartItem.unitsPerPack) {
+      totalDosesAvailable = Number(cartItem.unitsPerPack) * qty;
+    } else if (cartItem.conversionToBase) {
+      totalDosesAvailable = Number(cartItem.conversionToBase) * qty;
+    }
+
+    // Safely parse frequency (Default 2 for BD)
+    let dailyDoses = 2;
+    const fUpper = String(frequencyStr || '').toUpperCase();
+    if (fUpper.includes('1') || fUpper.includes('OD') || fUpper.includes('ONCE')) dailyDoses = 1;
+    else if (fUpper.includes('2') || fUpper.includes('BD') || fUpper.includes('TWICE')) dailyDoses = 2;
+    else if (fUpper.includes('3') || fUpper.includes('TDS') || fUpper.includes('THRICE')) dailyDoses = 3;
+    else if (fUpper.includes('4') || fUpper.includes('QID')) dailyDoses = 4;
+
+    // Calculate days and handle zero division
+    const daysOfSupply = Math.max(1, Math.floor(totalDosesAvailable / (dailyDoses || 1)));
+
+    // Set target date (runs out ON this day)
+    const target = new Date(saleDate);
+    target.setDate(target.getDate() + Math.max(0, daysOfSupply - 1));
+
+    return {
+      reminderDate: target.toISOString().split('T')[0], // YYYY-MM-DD
+      daysOfSupply
+    };
+  } catch (error) {
+    console.error("Reminder Calc Error:", error);
+    const fallback = new Date();
+    fallback.setDate(fallback.getDate() + 3);
+    return { reminderDate: fallback.toISOString().split('T')[0], daysOfSupply: 3 };
+  }
+}
+
 function createEmptyRow(id = Date.now()) {
   return {
     id,
@@ -24,12 +89,14 @@ function createEmptyRow(id = Date.now()) {
     packagingId: '',
     type: 'Rx',
     itemName: '',
+    dosageForm: '',
+    pack: '',
     batch: '',
     expiry: '',
-    qty: 1,
-    tabs: 0,
-    mrp: 0,
-    disc: 0,
+    qty: '',
+    tabs: '',
+    mrp: '',
+    disc: '',
     total: 0,
     gstPercent: 12,
     conversionToBase: 10,
@@ -59,19 +126,19 @@ export default function AddSalePos() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const queryParams = new URLSearchParams(location.search);
-  const draftIdFromQuery = queryParams.get('draft');
+  const draftIdFromQuery = queryParams.get('draftId') || queryParams.get('draft');
   const editIdFromQuery = queryParams.get('edit');
 
-  // Header state matching screenshot
+  // Header state matching clean new sale requirements
   const [billDate, setBillDate] = useState(new Date().toISOString().slice(0, 10));
   const [paymentStatus, setPaymentStatus] = useState('Paid'); // Paid, Unpaid, Partial
   const [paymentMethod, setPaymentMethod] = useState('Cash'); // Cash, UPI, Card
-  const [paidAmount, setPaidAmount] = useState('95');
-  const [discountPercent, setDiscountPercent] = useState('12');
-  const [customerName, setCustomerName] = useState('Cash Sale');
+  const [paidAmount, setPaidAmount] = useState('');
+  const [discountPercent, setDiscountPercent] = useState('');
+  const [customerName, setCustomerName] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
-  const [customerSearch, setCustomerSearch] = useState('Cash Sale');
+  const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [showDraftsModal, setShowDraftsModal] = useState(false);
@@ -86,12 +153,12 @@ export default function AddSalePos() {
 
   // Medication & Patient Reminder State (for saved customer)
   const [isReminderEnabled, setIsReminderEnabled] = useState(false);
+  const [selectedReminderDrugId, setSelectedReminderDrugId] = useState('');
   const [reminderDrugName, setReminderDrugName] = useState('');
   const [reminderDate, setReminderDate] = useState(
     new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   );
-  const [reminderTimesPerDay, setReminderTimesPerDay] = useState('2');
-  const [reminderTimes, setReminderTimes] = useState(['08:00 AM', '08:00 PM']);
+  const [reminderFrequency, setReminderFrequency] = useState('2 Times a Day (BD)');
   const [reminderMealTiming, setReminderMealTiming] = useState('AFTER_MEAL');
   const [reminderDosageNotes, setReminderDosageNotes] = useState('1 dose with water');
 
@@ -111,6 +178,8 @@ export default function AddSalePos() {
   const [drugSearch, setDrugSearch] = useState('');
   const [showDrugDropdown, setShowDrugDropdown] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [highlightedCustomerIndex, setHighlightedCustomerIndex] = useState(-1);
+  const [highlightedBatchIndex, setHighlightedBatchIndex] = useState(-1);
 
   // Notes & Documents
   const [notes, setNotes] = useState('');
@@ -118,6 +187,8 @@ export default function AddSalePos() {
 
   // Field refs
   const entryRefs = useRef({});
+  const hasHydratedDraftRef = useRef(null);
+  const isSavingRef = useRef(false);
 
   // Queries
   const productsQuery = useQuery({
@@ -146,17 +217,26 @@ export default function AddSalePos() {
       const allSales = unwrap(await api.get('/sales?status=DRAFT'));
       return Array.isArray(allSales) ? allSales : [];
     },
+    refetchOnWindowFocus: false, // Stop refetching on window switch
+    staleTime: 1000 * 60 * 5,
   });
 
   const saleDrafts = draftsQuery.data || [];
 
   const loadDraftIntoPos = (draft) => {
-    if (!draft) return;
+    if (!draft || !draft.id) return;
+
+    // Check hydration guard ref to prevent duplicate execution
+    if (hasHydratedDraftRef.current === String(draft.id)) return;
+    hasHydratedDraftRef.current = String(draft.id);
+
     setActiveDraftId(draft.id);
     setBillDate(draft.invoiceDate ? new Date(draft.invoiceDate).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
-    setCustomerName(draft.customer?.name || 'Cash Sale');
+    setCustomerName(draft.customer?.name || draft.customerName || '');
     setSelectedCustomerId(draft.customerId || '');
-    let rawDoc = draft.doctor || draft.doctorRel?.name || '';
+    setCustomerPhone(draft.customer?.phone || draft.customerPhone || '');
+    setCustomerSearch(draft.customer?.name || draft.customerName || '');
+    let rawDoc = draft.doctor || draft.doctorRel?.name || draft.doctorName || '';
     let parsedLic = draft.doctorRel?.registrationNo || '';
     let parsedCase = '';
 
@@ -178,10 +258,10 @@ export default function AddSalePos() {
     setDoctorSearch(rawDoc);
     setDoctorLicense(parsedLic);
     setCaseNumber(parsedCase);
-    setDiscountPercent(String(draft.discountPercent || 0));
+    setDiscountPercent(draft.discountPercent != null && draft.discountPercent !== '' ? String(draft.discountPercent) : '');
     setPaymentStatus(draft.paymentStatus === 'PAID' ? 'Paid' : draft.paymentStatus === 'PARTIAL' ? 'Partial' : 'Unpaid');
     setPaymentMethod(draft.paymentMethod === 'UPI' ? 'UPI' : draft.paymentMethod === 'CARD' ? 'Card' : 'Cash');
-    setPaidAmount(String(draft.paidAmount || 0));
+    setPaidAmount(draft.paymentStatus === 'PARTIAL' && draft.paidAmount != null ? String(draft.paidAmount) : '');
     setNotes(draft.notes || '');
     setPrescriptionImages(Array.isArray(draft.prescriptions) ? draft.prescriptions : []);
     setIsAyushman(Boolean(draft.isAyushman));
@@ -189,26 +269,30 @@ export default function AddSalePos() {
     setBeneficiaryId(draft.beneficiaryId || '');
     setClaimStatus(draft.claimStatus || 'PENDING');
 
-    const loadedRows = (draft.items || []).map((item, idx) => {
+    // 1. Overwrite cart directly with draft items (DO NOT append to existing cart)
+    const itemsToLoad = draft.items || draft.SaleItems || [];
+    const loadedRows = itemsToLoad.map((item, idx) => {
       const conversion = Number(item.packaging?.conversionToBase || 10);
       const totalUnits = Number(item.baseQuantity || item.quantity || 0);
       const packQty = Math.floor(totalUnits / conversion);
       const tabs = totalUnits % conversion;
+      const packName = item.packaging?.name || item.pack || getPharmaPack(item);
 
       return recalcRow({
         id: item.id || Date.now() + idx,
-        productId: item.productId,
-        batchId: item.batchId,
+        productId: item.productId || item.product?.id,
+        batchId: item.batchId || item.batch?.id,
         packagingId: item.packagingId || '',
         type: 'Rx',
-        itemName: item.product?.name || 'Medicine',
-        batch: item.batch?.batchNumber || 'DEFAULT',
-        expiry: item.batch?.expiryDate ? new Date(item.batch.expiryDate).toLocaleDateString('en-IN', { month: '2-digit', year: '2-digit' }) : '-',
+        itemName: item.product?.name || item.itemName || 'Medicine',
+        pack: packName,
+        batch: item.batch?.batchNumber || item.batchNumber || item.batch || 'DEFAULT',
+        expiry: item.batch?.expiryDate ? new Date(item.batch.expiryDate).toLocaleDateString('en-IN', { month: '2-digit', year: '2-digit' }) : (item.expiry || '-'),
         qty: packQty,
         tabs,
         mrp: Number(item.unitPrice || item.mrp || 0),
-        disc: Number(item.discountPercent || 0),
-        total: Number(item.totalAmount || 0),
+        disc: Number(item.discountPercent || item.disc || 0),
+        total: Number(item.totalAmount || item.total || 0),
         gstPercent: Number(item.cgstPercent || 0) + Number(item.sgstPercent || 0) || 12,
         conversionToBase: conversion,
         stock: 999,
@@ -216,6 +300,11 @@ export default function AddSalePos() {
     });
 
     setRows(loadedRows);
+
+    // 2. Clear current buffer quick-add entry row so it doesn't duplicate into cart
+    setEntryRow(createEmptyRow());
+    setDrugSearch('');
+
     setShowDraftsModal(false);
   };
 
@@ -231,16 +320,64 @@ export default function AddSalePos() {
     }
   });
 
-  // Auto load draft from query param if available
+  // Auto load draft from query param (from cache or direct API fetch) with strict single-run guard
   useEffect(() => {
     const targetId = draftIdFromQuery || editIdFromQuery;
-    if (targetId && saleDrafts.length > 0) {
+    if (!targetId) return;
+
+    // Prevent re-hydrating the same draft repeatedly
+    if (hasHydratedDraftRef.current === String(targetId)) return;
+
+    if (saleDrafts.length > 0) {
       const found = saleDrafts.find((d) => String(d.id) === String(targetId));
       if (found) {
         loadDraftIntoPos(found);
+        return;
       }
     }
+
+    // Direct fetch fallback if draft is not yet in cache
+    let isCancelled = false;
+    api.get(`/sales/${targetId}`)
+      .then((res) => {
+        if (!isCancelled && res.data?.data) {
+          loadDraftIntoPos(res.data.data);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not fetch draft bill directly:', err);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
   }, [draftIdFromQuery, editIdFromQuery, saleDrafts]);
+
+  // Automated Reminder Date Calculation based on Cart, Pack Size, and Frequency
+  useEffect(() => {
+    if (!isReminderEnabled || rows.length === 0) return;
+
+    // Find the cart item for the reminder (by selected id, matching drug name, or fallback to first row)
+    const cartItem =
+      rows.find((r) => String(r.id) === String(selectedReminderDrugId)) ||
+      rows.find((r) => reminderDrugName && String(r.itemName || '').toLowerCase() === String(reminderDrugName).toLowerCase()) ||
+      rows[0];
+
+    if (cartItem) {
+      // Auto sync drug name if not manually specified
+      if (!reminderDrugName || !rows.some((r) => String(r.itemName || '').toLowerCase() === String(reminderDrugName).toLowerCase())) {
+        setReminderDrugName(cartItem.itemName || 'Prescribed Medicine');
+      }
+      if (!selectedReminderDrugId || !rows.some((r) => String(r.id) === String(selectedReminderDrugId))) {
+        setSelectedReminderDrugId(String(cartItem.id));
+      }
+
+      const { reminderDate: calculatedDate } = calculateMedicineFinishDate(cartItem, reminderFrequency, new Date(billDate || Date.now()));
+      if (calculatedDate && reminderDate !== calculatedDate) {
+        setReminderDate(calculatedDate);
+      }
+    }
+  }, [isReminderEnabled, selectedReminderDrugId, rows, reminderFrequency, billDate]);
 
   // Quick Customer Creation Mutation
   const createCustomerMutation = useMutation({
@@ -256,7 +393,7 @@ export default function AddSalePos() {
       setNewCustomerData({ name: '', phone: '' });
     },
     onError: (err) => {
-      window.alert(err?.message || 'Failed to create customer');
+      window.alert(apiError(err) || 'Failed to create customer');
     }
   });
 
@@ -286,7 +423,7 @@ export default function AddSalePos() {
       setNewDoctorData({ name: '', phone: '', specialization: '', registrationNo: '' });
     },
     onError: (err) => {
-      window.alert(err?.message || 'Failed to create doctor');
+      window.alert(apiError(err) || 'Failed to create doctor');
     },
   });
 
@@ -315,19 +452,21 @@ export default function AddSalePos() {
       const safeBatches = Array.isArray(product.batches) ? product.batches : [];
       const primaryPkg = product.packaging?.[0] || null;
       const conversionToBase = primaryPkg ? Math.max(1, Number(primaryPkg.conversionToBase || 10)) : 10;
+      const primaryPack = primaryPkg?.name || getPharmaPack(product);
 
       let batchList = safeBatches.map((batch) => {
         const stockQty = (batch.stocks || []).reduce((sum, s) => sum + Number(s.quantity || 0), 0);
         return {
           productId: product.id,
           productName: product.name,
+          pack: primaryPack,
           batchId: batch.id,
           batchNumber: batch.batchNumber || 'DEFAULT',
           expiryDate: batch.expiryDate ? new Date(batch.expiryDate).toLocaleDateString('en-IN', { month: '2-digit', year: '2-digit' }) : '-',
           rawExpiry: batch.expiryDate ? new Date(batch.expiryDate) : null,
           mrp: Number(batch.sellingPrice || batch.mrp || product.mrp || 0),
           stock: stockQty,
-          dosageForm: product.dosageForm || 'Tablet',
+          dosageForm: product.dosageForm || '',
           packagingId: primaryPkg?.id || null,
           conversionToBase,
           gstPercent: Number(product.gstPercent || 12),
@@ -353,13 +492,14 @@ export default function AddSalePos() {
         batchList.push({
           productId: product.id,
           productName: product.name,
+          pack: primaryPack,
           batchId: product.id,
           batchNumber: 'STANDARD',
           expiryDate: '-',
           rawExpiry: null,
           mrp: Number(product.mrp || 0),
           stock: 999,
-          dosageForm: product.dosageForm || 'Tablet',
+          dosageForm: product.dosageForm || '',
           packagingId: primaryPkg?.id || null,
           conversionToBase,
           gstPercent: Number(product.gstPercent || 12),
@@ -369,7 +509,8 @@ export default function AddSalePos() {
       map.set(product.id, {
         productId: product.id,
         productName: product.name,
-        dosageForm: product.dosageForm || 'Tablet',
+        pack: primaryPack,
+        dosageForm: product.dosageForm || '',
         batches: batchList,
         totalStock: batchList.reduce((sum, b) => sum + Number(b.stock || 0), 0),
       });
@@ -380,8 +521,8 @@ export default function AddSalePos() {
   // Drug search suggestions showing batch count badge (+1, +2 etc.)
   const filteredDrugSuggestions = useMemo(() => {
     const term = drugSearch.trim().toLowerCase();
+    if (!term) return [];
     const allGroups = Array.from(productBatchesMap.values());
-    if (!term) return allGroups.slice(0, 10);
     return allGroups
       .filter((g) => g.productName.toLowerCase().includes(term) || g.batches.some((b) => b.batchNumber.toLowerCase().includes(term)))
       .slice(0, 10);
@@ -404,6 +545,8 @@ export default function AddSalePos() {
       batchId: batch.batchId,
       packagingId: batch.packagingId,
       itemName: batch.productName,
+      dosageForm: batch.dosageForm || '',
+      pack: batch.pack || '',
       batch: batch.batchNumber,
       expiry: batch.expiryDate,
       conversionToBase: batch.conversionToBase,
@@ -411,12 +554,14 @@ export default function AddSalePos() {
       stock: batch.stock,
       gstPercent: batch.gstPercent,
       qty: 1,
-      tabs: 0,
+      tabs: '',
       disc: 0,
     }));
     setDrugSearch(batch.productName);
     setShowDrugDropdown(false);
     setShowBatchDropdown(false);
+    setHighlightedIndex(-1);
+    setHighlightedBatchIndex(-1);
     setTimeout(() => focusEntry('qty'), 20);
   };
 
@@ -437,9 +582,33 @@ export default function AddSalePos() {
       return;
     }
 
-    setRows((prev) => [...prev, recalcRow({ ...entryRow, id: Date.now() })]);
+    setRows((prev) => {
+      const existingIndex = prev.findIndex(
+        (r) => r.productId === entryRow.productId && r.batchId === entryRow.batchId
+      );
+
+      if (existingIndex > -1) {
+        // Merge quantities with existing row
+        return prev.map((r, idx) => {
+          if (idx !== existingIndex) return r;
+          const mergedQty = Number(r.qty || 0) + Number(entryRow.qty || 0);
+          const mergedTabs = Number(r.tabs || 0) + Number(entryRow.tabs || 0);
+          return recalcRow({
+            ...r,
+            qty: mergedQty,
+            tabs: mergedTabs,
+            disc: Number(entryRow.disc || r.disc || 0),
+          });
+        });
+      }
+
+      // Add as new row
+      return [...prev, recalcRow({ ...entryRow, id: Date.now() })];
+    });
     setEntryRow(createEmptyRow());
     setDrugSearch('');
+    setShowDrugDropdown(false);
+    setHighlightedIndex(-1);
     setTimeout(() => focusEntry('search'), 20);
   };
 
@@ -452,6 +621,7 @@ export default function AddSalePos() {
         const updated = {
           ...row,
           batchId: batch.batchId,
+          pack: batch.pack || row.pack || '',
           batch: batch.batchNumber,
           expiry: batch.expiryDate,
           mrp: batch.mrp,
@@ -477,40 +647,53 @@ export default function AddSalePos() {
   const handleEntryKeyDown = (event, field) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      const order = ['qty', 'tabs', 'disc'];
-      const index = order.indexOf(field);
-      if (index === -1) return;
-
-      if (index === order.length - 1) {
+      const hasTabs = Number(entryRow.conversionToBase || 1) > 1 && isTabletOrCapsule(entryRow);
+      if (field === 'qty') {
+        if (hasTabs) {
+          focusEntry('tabs');
+        } else {
+          focusEntry('disc');
+        }
+      } else if (field === 'tabs') {
+        focusEntry('disc');
+      } else if (field === 'disc') {
         submitEntryRow();
-      } else {
-        focusEntry(order[index + 1]);
       }
     }
   };
 
   const handleSearchKeyDown = (event) => {
     if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setHighlightedIndex((curr) => (curr + 1) % filteredDrugSuggestions.length);
+      if (!showDrugDropdown && filteredDrugSuggestions.length > 0) {
+        setShowDrugDropdown(true);
+      }
+      if (filteredDrugSuggestions.length > 0) {
+        event.preventDefault();
+        setHighlightedIndex((curr) => (curr + 1) % filteredDrugSuggestions.length);
+      }
     } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setHighlightedIndex((curr) => (curr - 1 + filteredDrugSuggestions.length) % filteredDrugSuggestions.length);
+      if (filteredDrugSuggestions.length > 0) {
+        event.preventDefault();
+        setHighlightedIndex((curr) => (curr - 1 + filteredDrugSuggestions.length) % filteredDrugSuggestions.length);
+      }
     } else if (event.key === 'Enter') {
-      event.preventDefault();
-      const targetGroup = highlightedIndex >= 0 && filteredDrugSuggestions[highlightedIndex]
-        ? filteredDrugSuggestions[highlightedIndex]
-        : filteredDrugSuggestions[0];
+      if (showDrugDropdown && filteredDrugSuggestions.length > 0) {
+        event.preventDefault();
+        const targetGroup = highlightedIndex >= 0 && filteredDrugSuggestions[highlightedIndex]
+          ? filteredDrugSuggestions[highlightedIndex]
+          : filteredDrugSuggestions[0];
 
-      if (targetGroup && targetGroup.batches && targetGroup.batches.length > 0) {
-        applySelectedBatch(targetGroup.batches[0]);
+        if (targetGroup && targetGroup.batches && targetGroup.batches.length > 0) {
+          applySelectedBatch(targetGroup.batches[0]);
+        }
       }
     } else if (event.key === 'Escape') {
       setShowDrugDropdown(false);
+      setHighlightedIndex(-1);
     }
   };
 
-  // Calculations for bottom formula bar: Sub Total - Disc + Tax = Net
+  // Calculations for bottom formula bar: Sub Total (MRP) - Disc = Net Bill (with inclusive GST breakdown)
   const calculations = useMemo(() => {
     const allRows = [...rows];
     if (entryRow.productId && entryRow.batchId && (Number(entryRow.qty || 0) > 0 || Number(entryRow.tabs || 0) > 0)) {
@@ -525,7 +708,7 @@ export default function AddSalePos() {
       return sum + (packQty * unitMrp) + (looseQty * (unitMrp / conversion));
     }, 0);
 
-    const discountAmount = allRows.reduce((sum, r) => {
+    const itemDiscountAmount = allRows.reduce((sum, r) => {
       const packQty = Math.max(0, Number(r.qty || 0));
       const looseQty = Math.max(0, Number(r.tabs || 0));
       const conversion = Math.max(1, Number(r.conversionToBase || 1));
@@ -537,25 +720,44 @@ export default function AddSalePos() {
 
     // Also account for overall discount % if set
     const overallDiscPercent = Math.max(0, Math.min(100, Number(discountPercent || 0)));
-    const overallDiscAmount = (subTotal - discountAmount) * (overallDiscPercent / 100);
-    const totalDiscount = discountAmount + overallDiscAmount;
+    const overallDiscAmount = (subTotal - itemDiscountAmount) * (overallDiscPercent / 100);
+    const totalDiscount = itemDiscountAmount + overallDiscAmount;
 
-    const taxable = Math.max(0, subTotal - totalDiscount);
-    const tax = taxable * 0.12; // 12% standard GST
-    const rawGrandTotal = taxable + tax;
-    const grandTotal = Math.round(rawGrandTotal);
+    const netPayableBeforeRound = Math.max(0, subTotal - totalDiscount);
+    const grandTotal = Math.round(netPayableBeforeRound);
+
+    // Inclusive GST extraction per row
+    let totalTaxable = 0;
+    let totalTax = 0;
+    allRows.forEach((r) => {
+      const packQty = Math.max(0, Number(r.qty || 0));
+      const looseQty = Math.max(0, Number(r.tabs || 0));
+      const conversion = Math.max(1, Number(r.conversionToBase || 1));
+      const unitMrp = Number(r.mrp || 0);
+      const lineGross = (packQty * unitMrp) + (looseQty * (unitMrp / conversion));
+      const d = Math.max(0, Math.min(100, Number(r.disc || 0)));
+      const lineNet = (lineGross - (lineGross * (d / 100))) * (1 - (overallDiscPercent / 100));
+      const gstRate = Number(r.gstPercent || 12);
+      const gstFactor = 1 + (gstRate / 100);
+      const lineTaxable = gstFactor > 0 ? (lineNet / gstFactor) : lineNet;
+      const lineTax = lineNet - lineTaxable;
+      totalTaxable += lineTaxable;
+      totalTax += lineTax;
+    });
 
     return {
       subTotal: Number(subTotal.toFixed(2)),
       discount: Number(totalDiscount.toFixed(2)),
-      tax: Number(tax.toFixed(2)),
+      taxable: Number(totalTaxable.toFixed(2)),
+      tax: Number(totalTax.toFixed(2)),
       grandTotal,
     };
   }, [rows, entryRow, discountPercent]);
 
   // Save Sale Mutation
   const saveSaleMutation = useMutation({
-    mutationFn: async ({ isDraft = false }) => {
+    mutationFn: async (vars = {}) => {
+      const { isDraft = false, sendReminder = false, shouldPrint = false } = vars;
       const activeRows = [...rows];
       if (entryRow.productId && entryRow.batchId && (Number(entryRow.qty || 0) > 0 || Number(entryRow.tabs || 0) > 0)) {
         activeRows.push(recalcRow(entryRow));
@@ -572,6 +774,41 @@ export default function AddSalePos() {
         : isPartial
           ? Math.max(0, Math.min(calculations.grandTotal, Number(paidAmount || 0)))
           : calculations.grandTotal;
+
+      // Pre-Submit safe doses injection based on reminderFrequency
+      let safeDoses = [];
+      let timesCount = 2;
+      if (isReminderEnabled) {
+        const fUpper = String(reminderFrequency || '').toUpperCase();
+        if (fUpper.includes('1') || fUpper.includes('OD') || fUpper.includes('ONCE')) {
+          safeDoses = ['08:00 AM'];
+          timesCount = 1;
+        } else if (fUpper.includes('3') || fUpper.includes('TDS') || fUpper.includes('THRICE')) {
+          safeDoses = ['08:00 AM', '02:00 PM', '08:00 PM'];
+          timesCount = 3;
+        } else if (fUpper.includes('4') || fUpper.includes('QID')) {
+          safeDoses = ['08:00 AM', '12:00 PM', '04:00 PM', '08:00 PM'];
+          timesCount = 4;
+        } else {
+          safeDoses = ['08:00 AM', '08:00 PM']; // Default BD
+          timesCount = 2;
+        }
+      }
+
+      const reminderObj = (isReminderEnabled && (selectedCustomerId || customerName)) ? {
+        drugName: reminderDrugName || activeRows[0]?.itemName || 'Prescribed Medicine',
+        reminderDate,
+        reminderTime: safeDoses.join(', ') || '08:00 AM, 08:00 PM',
+        timesPerDay: timesCount,
+        mealTiming: reminderMealTiming,
+        dosageInstructions: reminderDosageNotes,
+        doses: safeDoses,
+      } : null;
+
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+      isSavingRef.current = true;
 
       const payload = {
         customerId: selectedCustomerId || null,
@@ -594,14 +831,12 @@ export default function AddSalePos() {
         ayushmanCardNo: isAyushman ? (ayushmanCardNo || null) : null,
         beneficiaryId: isAyushman ? (beneficiaryId || null) : null,
         claimStatus: isAyushman ? (claimStatus || 'PENDING') : null,
-        reminders: (isReminderEnabled && selectedCustomerId) ? [{
-          drugName: reminderDrugName || activeRows[0]?.itemName || 'Prescribed Medicine',
-          reminderDate,
-          reminderTime: reminderTimes.filter(Boolean).join(', ') || '08:00 AM, 08:00 PM',
-          timesPerDay: Number(reminderTimesPerDay) || 1,
-          mealTiming: reminderMealTiming,
-          dosageInstructions: reminderDosageNotes,
-        }] : [],
+        reminders: reminderObj ? [reminderObj] : [],
+        patientReminders: (isReminderEnabled && (selectedCustomerId || customerName)) ? {
+          ...reminderObj,
+          doses: safeDoses,
+        } : undefined,
+        saleId: activeDraftId || null,
         items: activeRows.map((r) => ({
           productId: r.productId,
           batchId: r.batchId,
@@ -617,18 +852,16 @@ export default function AddSalePos() {
 
       const res = unwrap(await api.post('/sales', payload));
 
-      // If this sale was resumed from an existing draft, delete the old draft so it doesn't stay in drafts list
-      if (!isDraft && activeDraftId) {
-        try {
-          await unwrap(await api.delete(`/sales/${activeDraftId}`));
-        } catch (e) {
-          console.warn('Could not delete resumed draft:', e);
-        }
-      }
-
-      return { res, sendReminder: Boolean(vars.sendReminder) };
+      return {
+        res,
+        sendReminder: Boolean(vars.sendReminder),
+        shouldPrint: Boolean(vars.shouldPrint),
+        printMode: vars.printMode || 'actual',
+        activeRows,
+      };
     },
     onSuccess: async (data, vars) => {
+      isSavingRef.current = false;
       await queryClient.invalidateQueries({ queryKey: ['sale-products'] });
       await queryClient.invalidateQueries({ queryKey: ['sales-list'] });
       await queryClient.invalidateQueries({ queryKey: ['sale-drafts'] });
@@ -639,21 +872,132 @@ export default function AddSalePos() {
       const saleRecord = data?.res || {};
       const saleId = saleRecord.id;
 
-      if (data.sendReminder && customerPhone) {
-        const drug = reminderDrugName || activeRows[0]?.itemName || 'Prescription Medicine';
-        const link = saleId ? `${window.location.origin}/p/bill/${saleId}` : window.location.origin;
-        const msg = `Hello ${customerName || 'Customer'}! Thank you for your visit. Your bill & medication schedule for ${drug} (${reminderTimesPerDay}x daily) has been scheduled. View details & track dosage here: ${link}`;
-        const phoneDigits = customerPhone.replace(/[^0-9]/g, '');
-        window.open(`https://wa.me/91${phoneDigits}?text=${encodeURIComponent(msg)}`, '_blank');
+      if (data.shouldPrint && saleRecord) {
+        const printWin = window.open('', '_blank');
+        if (printWin) {
+          const recordToPrint = {
+            ...saleRecord,
+            customer: saleRecord.customer || (customerName ? { name: customerName, phone: customerPhone } : null),
+            doctor: saleRecord.doctor || doctor || null,
+            items: (saleRecord.items && saleRecord.items.length > 0)
+              ? saleRecord.items.map((it) => {
+                  const matchRow = (data.activeRows || []).find((r) => r.batchId === it.batchId || r.productId === it.productId);
+                  return {
+                    ...it,
+                    qty: matchRow ? Number(matchRow.qty || 0) : undefined,
+                    tabs: matchRow ? Number(matchRow.tabs || 0) : undefined,
+                    conversionToBase: matchRow?.conversionToBase ?? it.packaging?.conversionToBase,
+                  };
+                })
+              : (data.activeRows || []).map((r) => ({
+                  product: { name: r.itemName, pack: r.pack, dosageForm: r.dosageForm },
+                  batch: { batchNumber: r.batchNumber, expiryDate: r.expiryDate, mrp: r.mrp },
+                  quantity: (Number(r.qty || 0) + (Number(r.tabs || 0) / Math.max(1, Number(r.conversionToBase || 10)))),
+                  qty: Number(r.qty || 0),
+                  tabs: Number(r.tabs || 0),
+                  conversionToBase: r.conversionToBase,
+                  unitPrice: r.rate || r.unitPrice || r.mrp,
+                  totalAmount: r.total || r.amount,
+                })),
+          };
+          const html = generateClassicPrintHtml(recordToPrint, user?.store, data.printMode || 'actual');
+          printWin.document.open();
+          printWin.document.write(html);
+          printWin.document.close();
+        }
       }
 
-      window.alert(vars.isDraft ? 'Sale saved as Draft' : 'Sale bill generated successfully!');
+      if (vars?.isSaveAndNew) {
+        setActiveDraftId(null);
+        hasHydratedDraftRef.current = null;
+        setRows([]);
+        setEntryRow(createEmptyRow());
+        setDrugSearch('');
+        setShowDrugDropdown(false);
+        setHighlightedIndex(-1);
+        setSelectedCustomerId('');
+        setCustomerName('');
+        setCustomerPhone('');
+        setCustomerSearch('');
+        setDiscountPercent('');
+        setPaymentStatus('Paid');
+        setPaymentMethod('Cash');
+        setPaidAmount('');
+        setDoctor('');
+        setSelectedDoctorId('');
+        setDoctorSearch('');
+        setDoctorLicense('');
+        setCaseNumber('');
+        setNotes('');
+        setPrescriptionImages([]);
+        setIsAyushman(false);
+        setAyushmanCardNo('');
+        setBeneficiaryId('');
+        setIsReminderEnabled(false);
+        setSelectedReminderDrugId('');
+        setReminderDrugName('');
+        setAutoSaveState({ status: 'idle', time: null });
+
+        window.alert(`Sale bill #${saleRecord.invoiceNumber || ''} generated successfully! Fresh bill ready.`);
+        setTimeout(() => focusEntry('search'), 50);
+        return;
+      }
+
+      if (vars?.sendReminder) {
+        setActiveDraftId(null);
+        hasHydratedDraftRef.current = null;
+        if (customerPhone) {
+          const drug = reminderDrugName || 'Prescription Medicine';
+          const link = saleId ? `${window.location.origin}/p/bill/${saleId}` : window.location.origin;
+          const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
+          const pharmacyName = user?.store?.name || 'our pharmacy';
+          const msg = `Hello ${customerName || 'Customer'}! Thank you for visiting ${pharmacyName}. Your bill & medication schedule for ${drug} has been scheduled. View details & track dosage here: ${link}`;
+          const phoneDigits = customerPhone.replace(/[^0-9]/g, '');
+          window.open(`https://wa.me/91${phoneDigits}?text=${encodeURIComponent(msg)}`, '_blank');
+          window.alert(`Sale bill generated successfully! Medication reminder scheduled and WhatsApp opened for ${customerName || 'customer'}.`);
+        } else {
+          window.alert(`Sale bill generated successfully! Medication reminder scheduled for ${customerName || 'customer'} (WhatsApp link not opened: no phone number on record).`);
+        }
+        navigate('/sales');
+        return;
+      }
+
+      if (vars?.isDraft) {
+        window.alert('Sale saved as Draft');
+        navigate('/sales');
+        return;
+      }
+
+      setActiveDraftId(null);
+      hasHydratedDraftRef.current = null;
+      window.alert('Sale bill generated successfully!');
       navigate('/sales');
     },
     onError: (err) => {
-      window.alert(err?.message || 'Failed to save sale');
+      isSavingRef.current = false;
+      window.alert(apiError(err) || 'Failed to save sale');
     },
   });
+
+  // Dual-Mode Print Format Modal
+  const [showPrintFormatModal, setShowPrintFormatModal] = useState(false);
+
+  const handlePrintButtonClick = () => {
+    const activeRows = [...rows];
+    if (entryRow.productId && entryRow.batchId && (Number(entryRow.qty || 0) > 0 || Number(entryRow.tabs || 0) > 0)) {
+      activeRows.push(entryRow);
+    }
+    if (!activeRows.length) {
+      window.alert('Please add at least one medicine before printing the bill');
+      return;
+    }
+    setShowPrintFormatModal(true);
+  };
+
+  const handleSelectPrintMode = (mode) => {
+    setShowPrintFormatModal(false);
+    saveSaleMutation.mutate({ isDraft: false, shouldPrint: true, printMode: mode });
+  };
 
   // Auto-Save Draft State & Logic
   const [autoSaveState, setAutoSaveState] = useState({ status: 'idle', time: null });
@@ -661,15 +1005,15 @@ export default function AddSalePos() {
   const autoSaveTimerRef = useRef(null);
 
   const silentAutoSaveSaleDraft = async () => {
+    if (isSavingRef.current || saveSaleMutation.isPending) return;
+
     const activeRows = [...rows];
     if (entryRow.productId && entryRow.batchId && (Number(entryRow.qty || 0) > 0 || Number(entryRow.tabs || 0) > 0)) {
       activeRows.push(recalcRow(entryRow));
     }
 
-    const hasCustomer = Boolean(selectedCustomerId || (customerName && customerName.trim() && customerName !== 'Cash Sale'));
-    const hasRows = activeRows.length > 0;
-
-    if (!hasCustomer && !hasRows) return;
+    // Only autosave if there are actual medicine rows in the sale
+    if (activeRows.length === 0) return;
 
     const isUnpaid = paymentStatus === 'Unpaid';
     const isPartial = paymentStatus === 'Partial';
@@ -754,6 +1098,85 @@ export default function AddSalePos() {
     };
   }, [rows, entryRow, selectedCustomerId, customerName, customerPhone, doctor, notes, discountPercent, paymentMethod, paymentStatus]);
 
+  // Global Keyboard Shortcuts (Ctrl+Enter / Alt+S for Save & Add New)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e) => {
+      if (showCustomerModal || showDoctorModal || showDraftsModal || showPrintFormatModal) return;
+      if (e.target && e.target.tagName === 'TEXTAREA') return;
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        saveSaleMutation.mutate({ isDraft: false, isSaveAndNew: true });
+      } else if (e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        saveSaleMutation.mutate({ isDraft: false, isSaveAndNew: true });
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [showCustomerModal, showDoctorModal, showDraftsModal, showPrintFormatModal, rows, entryRow, selectedCustomerId, customerName, paidAmount, discountPercent, paymentMethod, paymentStatus]);
+
+  const filteredCustomerList = useMemo(() => {
+    const term = customerSearch.trim().toLowerCase();
+    if (!term) return customers.slice(0, 8);
+    return customers
+      .filter((c) => (c.name || '').toLowerCase().includes(term) || (c.phone || '').includes(term))
+      .slice(0, 8);
+  }, [customers, customerSearch]);
+
+  const selectCustomer = (c) => {
+    if (!c) {
+      // Walk-in
+      setSelectedCustomerId('');
+      setCustomerName('Cash Sale / Walk-in');
+      setCustomerPhone('');
+      setCustomerSearch('Cash Sale / Walk-in');
+    } else {
+      setSelectedCustomerId(c.id);
+      setCustomerName(c.name);
+      setCustomerPhone(c.phone || '');
+      setCustomerSearch(c.name);
+      if (c.defaultDiscountPercent != null && c.defaultDiscountPercent !== '') {
+        setDiscountPercent(String(c.defaultDiscountPercent));
+      }
+    }
+    setShowCustomerDropdown(false);
+    setHighlightedCustomerIndex(-1);
+    setTimeout(() => focusEntry('search'), 30);
+  };
+
+  const handleCustomerKeyDown = (event) => {
+    const totalOptions = 1 + filteredCustomerList.length;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!showCustomerDropdown) setShowCustomerDropdown(true);
+      setHighlightedCustomerIndex((curr) => (curr + 1) % totalOptions);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (!showCustomerDropdown) setShowCustomerDropdown(true);
+      setHighlightedCustomerIndex((curr) => (curr - 1 + totalOptions) % totalOptions);
+    } else if (event.key === 'Enter') {
+      if (showCustomerDropdown) {
+        event.preventDefault();
+        if (highlightedCustomerIndex === 0) {
+          selectCustomer(null);
+        } else if (highlightedCustomerIndex > 0 && filteredCustomerList[highlightedCustomerIndex - 1]) {
+          selectCustomer(filteredCustomerList[highlightedCustomerIndex - 1]);
+        } else if (filteredCustomerList.length > 0) {
+          selectCustomer(filteredCustomerList[0]);
+        } else {
+          setShowCustomerDropdown(false);
+          focusEntry('search');
+        }
+      }
+    } else if (event.key === 'Escape') {
+      setShowCustomerDropdown(false);
+      setHighlightedCustomerIndex(-1);
+    }
+  };
+
   return (
     <div className="pos-container">
       {/* Top Header Bar */}
@@ -768,6 +1191,11 @@ export default function AddSalePos() {
             <ChevronLeft size={18} />
           </button>
           <h1 className="pos-top-title">Add Sale</h1>
+          {activeDraftId && (
+            <span className="ml-2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-brand-primary border border-emerald-300">
+              Editing Draft #{activeDraftId.slice(-6)}
+            </span>
+          )}
         </div>
 
         <div className="pos-top-actions">
@@ -788,7 +1216,32 @@ export default function AddSalePos() {
               setRows([]);
               setEntryRow(createEmptyRow());
               setDrugSearch('');
+              setShowDrugDropdown(false);
+              setHighlightedIndex(-1);
+              setSelectedCustomerId('');
+              setCustomerName('');
+              setCustomerPhone('');
+              setCustomerSearch('');
+              setDiscountPercent('');
+              setPaymentStatus('Paid');
+              setPaymentMethod('Cash');
+              setPaidAmount('');
+              setDoctor('');
+              setSelectedDoctorId('');
+              setDoctorSearch('');
+              setDoctorLicense('');
+              setCaseNumber('');
+              setNotes('');
+              setPrescriptionImages([]);
+              setIsAyushman(false);
+              setAyushmanCardNo('');
+              setBeneficiaryId('');
+              setIsReminderEnabled(false);
+              setSelectedReminderDrugId('');
+              setReminderDrugName('');
               setActiveDraftId(null);
+              hasHydratedDraftRef.current = null;
+              setAutoSaveState({ status: 'idle', time: null });
             }}
             className="pos-btn-ghost"
           >
@@ -822,7 +1275,6 @@ export default function AddSalePos() {
           >
             + Save Draft
           </button>
-          <span className="pos-mode-badge">Retail</span>
         </div>
       </div>
 
@@ -840,16 +1292,11 @@ export default function AddSalePos() {
               <div style={{ display: 'flex', gap: '6px' }}>
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedCustomerId('');
-                    setCustomerName('Walk-in Customer');
-                    setCustomerPhone('');
-                    setCustomerSearch('Walk-in Customer');
-                  }}
+                  onClick={() => selectCustomer(null)}
                   style={{
                     border: '1px solid #c9e6de',
-                    background: !selectedCustomerId && customerName === 'Walk-in Customer' ? '#007a70' : '#fff',
-                    color: !selectedCustomerId && customerName === 'Walk-in Customer' ? '#fff' : '#0e695d',
+                    background: !selectedCustomerId && (customerName === 'Cash Sale / Walk-in' || customerName === 'Walk-in Customer') ? '#007a70' : '#fff',
+                    color: !selectedCustomerId && (customerName === 'Cash Sale / Walk-in' || customerName === 'Walk-in Customer') ? '#fff' : '#0e695d',
                     fontSize: '9.5px',
                     fontWeight: 600,
                     borderRadius: '4px',
@@ -886,15 +1333,19 @@ export default function AddSalePos() {
             {/* Customer Search & Picker */}
             <div style={{ marginTop: '8px', position: 'relative' }}>
               <input
+                ref={(el) => { entryRefs.current.customerSearch = el; }}
                 value={customerSearch}
                 onFocus={() => setShowCustomerDropdown(true)}
+                onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
                 onChange={(e) => {
                   const val = e.target.value;
                   setCustomerSearch(val);
-                  setCustomerName(val || 'Cash Sale');
+                  setCustomerName(val);
                   setSelectedCustomerId('');
                   setShowCustomerDropdown(true);
+                  setHighlightedCustomerIndex(-1);
                 }}
+                onKeyDown={handleCustomerKeyDown}
                 placeholder="Search or enter customer name..."
                 style={{
                   width: '100%',
@@ -925,17 +1376,14 @@ export default function AddSalePos() {
                   <div
                     onMouseDown={(e) => {
                       e.preventDefault();
-                      setSelectedCustomerId('');
-                      setCustomerName('Cash Sale / Walk-in');
-                      setCustomerPhone('');
-                      setCustomerSearch('Cash Sale / Walk-in');
-                      setShowCustomerDropdown(false);
+                      selectCustomer(null);
                     }}
                     style={{
                       padding: '6px 8px',
                       borderBottom: '1px solid #eef5f3',
                       cursor: 'pointer',
-                      background: !selectedCustomerId ? '#eef7f5' : '#fff',
+                      background: highlightedCustomerIndex === 0 ? '#e2f2ee' : (!selectedCustomerId && customerName === 'Cash Sale / Walk-in' ? '#eef7f5' : '#fff'),
+                      borderLeft: highlightedCustomerIndex === 0 ? '3px solid #007a70' : '3px solid transparent',
                       fontSize: '11px',
                       fontWeight: 600,
                       color: '#0e695d'
@@ -944,25 +1392,21 @@ export default function AddSalePos() {
                     🚶 Cash Sale / Walk-in Customer
                   </div>
 
-                  {customers
-                    .filter((c) => (c.name || '').toLowerCase().includes(customerSearch.trim().toLowerCase()) || (c.phone || '').includes(customerSearch.trim()))
-                    .slice(0, 8)
-                    .map((c) => (
+                  {filteredCustomerList.map((c, idx) => {
+                    const isHighlighted = highlightedCustomerIndex === idx + 1;
+                    return (
                       <div
                         key={c.id}
                         onMouseDown={(e) => {
                           e.preventDefault();
-                          setSelectedCustomerId(c.id);
-                          setCustomerName(c.name);
-                          setCustomerPhone(c.phone || '');
-                          setCustomerSearch(c.name);
-                          setShowCustomerDropdown(false);
+                          selectCustomer(c);
                         }}
                         style={{
                           padding: '6px 8px',
                           borderBottom: '1px solid #f0f6f4',
                           cursor: 'pointer',
-                          background: selectedCustomerId === c.id ? '#eef7f5' : '#fff',
+                          background: isHighlighted ? '#e2f2ee' : (selectedCustomerId === c.id ? '#eef7f5' : '#fff'),
+                          borderLeft: isHighlighted ? '3px solid #007a70' : '3px solid transparent',
                           fontSize: '11px',
                           display: 'flex',
                           justifyContent: 'space-between',
@@ -979,13 +1423,14 @@ export default function AddSalePos() {
                           </div>
                         )}
                       </div>
-                    ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
 
             <div style={{ marginTop: '6px', fontSize: '9.5px', color: '#52726c', display: 'flex', justifyContent: 'space-between' }}>
-              <span>{selectedCustomerId ? 'Registered Customer' : 'Walk-in Mode'}</span>
+              <span>{selectedCustomerId ? 'Registered Customer' : customerName ? 'Walk-in / Custom Customer' : 'No Customer Selected'}</span>
               {customerPhone && <span>📞 {customerPhone}</span>}
             </div>
 
@@ -1082,32 +1527,39 @@ export default function AddSalePos() {
                       <label style={{ display: 'block', fontSize: '9.5px', fontWeight: 700, color: '#007a70', marginBottom: '2px' }}>
                         Medicine / Drug Name
                       </label>
-                      <input
-                        type="text"
-                        placeholder="e.g. Amoxicillin 500mg (or auto from bill)"
-                        value={reminderDrugName}
-                        onChange={(e) => setReminderDrugName(e.target.value)}
-                        style={{
-                          width: '100%',
-                          border: '1px solid #cadcd7',
-                          borderRadius: '4px',
-                          padding: '3px 6px',
-                          fontSize: '10.5px',
-                          color: '#133e36',
-                          background: '#fff',
-                        }}
-                      />
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-                      <div>
-                        <label style={{ display: 'block', fontSize: '9.5px', fontWeight: 700, color: '#446059', marginBottom: '2px' }}>
-                          Reminder Date *
-                        </label>
+                      {rows.length > 1 ? (
+                        <select
+                          value={selectedReminderDrugId || (rows[0] ? String(rows[0].id) : '')}
+                          onChange={(e) => {
+                            const chosenId = e.target.value;
+                            setSelectedReminderDrugId(chosenId);
+                            const matched = rows.find((r) => String(r.id) === String(chosenId));
+                            if (matched) {
+                              setReminderDrugName(matched.itemName || 'Prescribed Medicine');
+                            }
+                          }}
+                          style={{
+                            width: '100%',
+                            border: '1px solid #cadcd7',
+                            borderRadius: '4px',
+                            padding: '3px 6px',
+                            fontSize: '10.5px',
+                            color: '#133e36',
+                            background: '#fff',
+                          }}
+                        >
+                          {rows.map((r, idx) => (
+                            <option key={r.id || idx} value={String(r.id)}>
+                              {r.itemName || `Item #${idx + 1}`} (Qty: {r.qty || 1} {r.pack || ''})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
                         <input
-                          type="date"
-                          value={reminderDate}
-                          onChange={(e) => setReminderDate(e.target.value)}
+                          type="text"
+                          placeholder="e.g. Amoxicillin 500mg (or auto from bill)"
+                          value={reminderDrugName}
+                          onChange={(e) => setReminderDrugName(e.target.value)}
                           style={{
                             width: '100%',
                             border: '1px solid #cadcd7',
@@ -1118,6 +1570,32 @@ export default function AddSalePos() {
                             background: '#fff',
                           }}
                         />
+                      )}
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
+                      <div>
+                        <label style={{ display: 'block', fontSize: '9.5px', fontWeight: 700, color: '#446059', marginBottom: '2px' }}>
+                          Frequency (Dosage / Day) *
+                        </label>
+                        <select
+                          value={reminderFrequency}
+                          onChange={(e) => setReminderFrequency(e.target.value)}
+                          style={{
+                            width: '100%',
+                            border: '1px solid #cadcd7',
+                            borderRadius: '4px',
+                            padding: '3px 6px',
+                            fontSize: '10.5px',
+                            color: '#133e36',
+                            background: '#fff',
+                          }}
+                        >
+                          <option value="1 Time a Day (OD)">1 Time a Day (OD)</option>
+                          <option value="2 Times a Day (BD)">2 Times a Day (BD)</option>
+                          <option value="3 Times a Day (TDS)">3 Times a Day (TDS)</option>
+                          <option value="4 Times a Day (QID)">4 Times a Day (QID)</option>
+                        </select>
                       </div>
 
                       <div>
@@ -1147,21 +1625,12 @@ export default function AddSalePos() {
 
                     <div>
                       <label style={{ display: 'block', fontSize: '9.5px', fontWeight: 700, color: '#446059', marginBottom: '2px' }}>
-                        Frequency (Times / Day) *
+                        Reminder Date (Auto Calculated) *
                       </label>
-                      <select
-                        value={reminderTimesPerDay}
-                        onChange={(e) => {
-                          const count = Number(e.target.value);
-                          setReminderTimesPerDay(e.target.value);
-                          const defaultPresets = [
-                            ['08:00 AM'],
-                            ['08:00 AM', '08:00 PM'],
-                            ['08:00 AM', '01:00 PM', '08:00 PM'],
-                            ['08:00 AM', '01:00 PM', '05:00 PM', '09:30 PM'],
-                          ];
-                          setReminderTimes(defaultPresets[count - 1] || ['08:00 AM']);
-                        }}
+                      <input
+                        type="date"
+                        value={reminderDate}
+                        onChange={(e) => setReminderDate(e.target.value)}
                         style={{
                           width: '100%',
                           border: '1px solid #cadcd7',
@@ -1171,56 +1640,10 @@ export default function AddSalePos() {
                           color: '#133e36',
                           background: '#fff',
                         }}
-                      >
-                        <option value="1">1 Time a Day (OD)</option>
-                        <option value="2">2 Times a Day (BD)</option>
-                        <option value="3">3 Times a Day (TDS)</option>
-                        <option value="4">4 Times a Day (QID)</option>
-                      </select>
-                    </div>
-
-                    {/* Dynamic Multi-Time Selectors based on frequency */}
-                    <div style={{ background: '#f2f8f6', padding: '6px 8px', borderRadius: '6px', border: '1px solid #d4e8e2' }}>
-                      <label style={{ display: 'block', fontSize: '9.5px', fontWeight: 700, color: '#007a70', marginBottom: '4px' }}>
-                        ⏰ Consumption Times ({reminderTimesPerDay} Times Scheduled)
-                      </label>
-                      <div style={{ display: 'grid', gridTemplateColumns: Number(reminderTimesPerDay) > 2 ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(130px, 1fr))', gap: '4px' }}>
-                        {Array.from({ length: Number(reminderTimesPerDay) || 1 }).map((_, idx) => (
-                          <div key={idx}>
-                            <span style={{ fontSize: '8.5px', fontWeight: 700, color: '#55726c' }}>Dose #{idx + 1} Time:</span>
-                            <select
-                              value={reminderTimes[idx] || (idx === 0 ? '08:00 AM' : idx === 1 ? '08:00 PM' : idx === 2 ? '01:00 PM' : '05:00 PM')}
-                              onChange={(e) => {
-                                const updated = [...reminderTimes];
-                                updated[idx] = e.target.value;
-                                setReminderTimes(updated);
-                              }}
-                              style={{
-                                width: '100%',
-                                border: '1px solid #b7d6ce',
-                                borderRadius: '4px',
-                                padding: '2px 4px',
-                                fontSize: '10px',
-                                fontWeight: 600,
-                                color: '#133e36',
-                                background: '#fff',
-                                outline: 'none',
-                              }}
-                            >
-                              <option value="07:00 AM">07:00 AM (Early Morning)</option>
-                              <option value="08:00 AM">08:00 AM (Morning)</option>
-                              <option value="09:00 AM">09:00 AM (Breakfast)</option>
-                              <option value="12:00 PM">12:00 PM (Noon)</option>
-                              <option value="01:00 PM">01:00 PM (Lunch)</option>
-                              <option value="05:00 PM">05:00 PM (Evening)</option>
-                              <option value="07:00 PM">07:00 PM (Pre-Dinner)</option>
-                              <option value="08:00 PM">08:00 PM (Dinner)</option>
-                              <option value="09:30 PM">09:30 PM (Bedtime)</option>
-                              <option value="10:00 PM">10:00 PM (Late Night)</option>
-                            </select>
-                          </div>
-                        ))}
-                      </div>
+                      />
+                      <span style={{ fontSize: '8.5px', color: '#668780', marginTop: '2px', display: 'block' }}>
+                        Calculated Course: Auto-refill on exact finish day.
+                      </span>
                     </div>
 
                     <div>
@@ -1375,7 +1798,12 @@ export default function AddSalePos() {
                   <button
                     key={status}
                     type="button"
-                    onClick={() => setPaymentStatus(status)}
+                    onClick={() => {
+                      setPaymentStatus(status);
+                      if (status === 'Unpaid' || status === 'Partial' || status === 'Paid') {
+                        setPaidAmount('');
+                      }
+                    }}
                     className={`pos-pay-tab ${paymentStatus === status ? 'active' : ''}`}
                   >
                     {status}
@@ -1402,7 +1830,8 @@ export default function AddSalePos() {
                 <span>Paid Amount</span>
                 <input
                   type="number"
-                  value={paymentStatus === 'Paid' ? calculations.grandTotal : paidAmount}
+                  placeholder={paymentStatus === 'Partial' ? 'Enter amount' : ''}
+                  value={paymentStatus === 'Paid' ? (calculations.grandTotal || '') : paymentStatus === 'Unpaid' ? '' : paidAmount}
                   onChange={(e) => setPaidAmount(e.target.value)}
                   disabled={paymentStatus === 'Paid' || paymentStatus === 'Unpaid'}
                 />
@@ -1412,6 +1841,7 @@ export default function AddSalePos() {
                 <span>Discount %</span>
                 <input
                   type="number"
+                  placeholder="0"
                   value={discountPercent}
                   onChange={(e) => setDiscountPercent(e.target.value)}
                 />
@@ -1727,8 +2157,8 @@ export default function AddSalePos() {
             <table className="pos-table">
               <colgroup>
                 <col style={{ width: '40px' }} />
-                <col style={{ width: '60px' }} />
                 <col style={{ width: '280px' }} />
+                <col style={{ width: '75px' }} />
                 <col style={{ width: '100px' }} />
                 <col style={{ width: '80px' }} />
                 <col style={{ width: '70px' }} />
@@ -1741,12 +2171,18 @@ export default function AddSalePos() {
               <thead>
                 <tr>
                   <th className="center">S.No</th>
-                  <th>Type</th>
                   <th>DRUG</th>
+                  <th>PACK</th>
                   <th>BATCH</th>
                   <th>EXPIRY</th>
-                  <th className="center">QTY</th>
-                  <th className="center">TABS</th>
+                  <th className="center" title="Commercial quantity (Strips for Tablets/Capsules)">
+                    <div>QTY</div>
+                    <div style={{ fontSize: '9px', fontWeight: 'normal', color: '#94a3b8', textTransform: 'none', lineHeight: 1 }}>Strip</div>
+                  </th>
+                  <th className="center" title="Loose tablet/capsule quantity">
+                    <div>USE</div>
+                    <div style={{ fontSize: '9px', fontWeight: 'normal', color: '#94a3b8', textTransform: 'none', lineHeight: 1 }}>Loose</div>
+                  </th>
                   <th className="right">MRP</th>
                   <th className="center">DISC%</th>
                   <th className="right">TOTAL</th>
@@ -1766,16 +2202,6 @@ export default function AddSalePos() {
                       +
                     </button>
                   </td>
-                  <td>
-                    <select
-                      value={entryRow.type}
-                      onChange={(e) => setEntryRow({ ...entryRow, type: e.target.value })}
-                      style={{ height: '26px', padding: '0 4px' }}
-                    >
-                      <option>Rx</option>
-                      <option>OTC</option>
-                    </select>
-                  </td>
                   <td style={{ position: 'relative' }}>
                     <input
                       ref={(el) => { entryRefs.current.search = el; }}
@@ -1783,14 +2209,40 @@ export default function AddSalePos() {
                       onChange={(e) => {
                         const val = e.target.value;
                         setDrugSearch(val);
-                        setShowDrugDropdown(true);
+                        setShowDrugDropdown(val.trim().length > 0);
+                        setHighlightedIndex(-1);
+                        if (entryRow.productId && val !== entryRow.itemName) {
+                          setEntryRow((prev) => ({
+                            ...prev,
+                            productId: '',
+                            batchId: '',
+                            packagingId: '',
+                            itemName: '',
+                            pack: '',
+                            batch: '',
+                            expiry: '',
+                            qty: '',
+                            tabs: '',
+                            mrp: '',
+                            disc: '',
+                            total: 0,
+                            stock: 0,
+                          }));
+                        }
                       }}
-                      onFocus={() => setShowDrugDropdown(true)}
+                      onFocus={() => {
+                        if (drugSearch.trim().length > 0) {
+                          setShowDrugDropdown(true);
+                        }
+                      }}
+                      onBlur={() => {
+                        setTimeout(() => setShowDrugDropdown(false), 200);
+                      }}
                       onKeyDown={handleSearchKeyDown}
                       placeholder="Search drug / medicine..."
                       style={{ width: '100%', fontWeight: 600 }}
                     />
-                    {showDrugDropdown && (
+                    {showDrugDropdown && filteredDrugSuggestions.length > 0 && (
                       <div style={{
                         position: 'absolute',
                         left: 0,
@@ -1804,66 +2256,89 @@ export default function AddSalePos() {
                         maxHeight: '260px',
                         overflowY: 'auto'
                       }}>
-                        {filteredDrugSuggestions.length === 0 ? (
-                          <div style={{ padding: '10px', fontSize: '11px', color: '#7a8e89', textAlign: 'center' }}>
-                            No matching drug found in stock.
-                          </div>
-                        ) : (
-                          filteredDrugSuggestions.map((group, idx) => {
-                            const primaryBatch = group.batches[0];
-                            const extraBatchesCount = group.batches.length - 1;
-                            return (
-                              <div
-                                key={group.productId}
-                                onMouseDown={(e) => {
-                                  e.preventDefault();
-                                  applySelectedBatch(primaryBatch);
-                                }}
-                                style={{
-                                  display: 'flex',
-                                  justifyContent: 'space-between',
-                                  alignItems: 'center',
-                                  width: '100%',
-                                  padding: '8px 10px',
-                                  background: highlightedIndex === idx ? '#e2f2ee' : '#fff',
-                                  cursor: 'pointer',
-                                  borderBottom: '1px solid #edf4f2',
-                                  fontSize: '11px'
-                                }}
-                              >
-                                <div>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                    <strong style={{ color: '#1a3832' }}>{group.productName}</strong>
-                                    {extraBatchesCount > 0 && (
-                                      <span style={{
-                                        background: '#e0f2fe',
-                                        color: '#0369a1',
-                                        fontSize: '9px',
-                                        fontWeight: 'bold',
-                                        padding: '1px 5px',
-                                        borderRadius: '10px',
-                                        border: '1px solid #bae6fd'
-                                      }}>
-                                        +{extraBatchesCount} batches
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div style={{ fontSize: '9.5px', color: '#68827c', marginTop: '2px' }}>
-                                    Batch: {primaryBatch.batchNumber} • Exp: {primaryBatch.expiryDate}
-                                  </div>
+                        {filteredDrugSuggestions.map((group, idx) => {
+                          const primaryBatch = group.batches[0];
+                          const extraBatchesCount = group.batches.length - 1;
+                          const isHighlighted = highlightedIndex === idx;
+                          return (
+                            <div
+                              key={group.productId}
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                applySelectedBatch(primaryBatch);
+                              }}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                width: '100%',
+                                padding: '8px 10px',
+                                background: isHighlighted ? '#e2f2ee' : '#fff',
+                                borderLeft: isHighlighted ? '3px solid #007a70' : '3px solid transparent',
+                                cursor: 'pointer',
+                                borderBottom: '1px solid #edf4f2',
+                                fontSize: '11px'
+                              }}
+                            >
+                              <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <strong style={{ color: '#1a3832' }}>{group.productName}</strong>
+                                  {group.pack && (
+                                    <span style={{
+                                      background: '#ecfdf5',
+                                      color: '#065f46',
+                                      fontSize: '9px',
+                                      fontWeight: 700,
+                                      padding: '1px 5px',
+                                      borderRadius: '4px',
+                                      border: '1px solid #a7f3d0'
+                                    }}>
+                                      {group.pack}
+                                    </span>
+                                  )}
+                                  {extraBatchesCount > 0 && (
+                                    <span style={{
+                                      background: '#e0f2fe',
+                                      color: '#0369a1',
+                                      fontSize: '9px',
+                                      fontWeight: 'bold',
+                                      padding: '1px 5px',
+                                      borderRadius: '10px',
+                                      border: '1px solid #bae6fd'
+                                    }}>
+                                      +{extraBatchesCount} batches
+                                    </span>
+                                  )}
                                 </div>
-                                <div style={{ textAlign: 'right' }}>
-                                  <b style={{ color: '#007a70' }}>{money(primaryBatch.mrp)}</b>
-                                  <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#15806e' }}>
-                                    Total Stock: {group.totalStock}
-                                  </div>
+                                <div style={{ fontSize: '9.5px', color: '#68827c', marginTop: '2px' }}>
+                                  Batch: {primaryBatch.batchNumber} • Exp: {primaryBatch.expiryDate}
                                 </div>
                               </div>
-                            );
-                          })
-                        )}
+                              <div style={{ textAlign: 'right' }}>
+                                <b style={{ color: '#007a70' }}>{money(primaryBatch.mrp)}</b>
+                                <div style={{ fontSize: '9.5px', fontWeight: 700, color: '#15806e' }}>
+                                  Total Stock: {group.totalStock}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
+                  </td>
+                  <td>
+                    <input
+                      value={entryRow.pack || ''}
+                      readOnly
+                      placeholder="Pack"
+                      style={{
+                        width: '100%',
+                        background: '#f4f8f7',
+                        fontWeight: 600,
+                        color: '#0f5247',
+                        fontSize: '10.5px'
+                      }}
+                    />
                   </td>
                   <td style={{ position: 'relative' }}>
                     <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -1942,7 +2417,7 @@ export default function AddSalePos() {
                               style={{
                                 padding: '6px 8px',
                                 display: 'flex',
-                                justifySelf: 'space-between',
+                                justifyContentSelf: 'space-between',
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
                                 borderBottom: '1px solid #f0f6f4',
@@ -1997,10 +2472,17 @@ export default function AddSalePos() {
                       type="number"
                       min="0"
                       value={entryRow.qty}
-                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, qty: Math.max(0, Number(e.target.value || 0)) }))}
+                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, qty: e.target.value === '' ? '' : Math.max(0, Number(e.target.value)) }))}
                       onKeyDown={(e) => handleEntryKeyDown(e, 'qty')}
                       style={{ width: '54px', textAlign: 'center', fontWeight: 'bold' }}
+                      placeholder={isTabletOrCapsule(entryRow) ? "Strips" : "Qty"}
+                      title={isTabletOrCapsule(entryRow) ? "Strip quantity" : "Commercial quantity"}
                     />
+                    {isTabletOrCapsule(entryRow) && (
+                      <div style={{ fontSize: '9px', color: '#64748b', fontWeight: 600, marginTop: '2px', lineHeight: 1 }}>
+                        Strip
+                      </div>
+                    )}
                   </td>
                   <td className="center">
                     <input
@@ -2008,13 +2490,26 @@ export default function AddSalePos() {
                       type="number"
                       min="0"
                       value={entryRow.tabs}
-                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, tabs: Math.max(0, Number(e.target.value || 0)) }))}
+                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, tabs: e.target.value === '' ? '' : Math.max(0, Number(e.target.value)) }))}
                       onKeyDown={(e) => handleEntryKeyDown(e, 'tabs')}
-                      style={{ width: '54px', textAlign: 'center' }}
+                      disabled={!isTabletOrCapsule(entryRow) && Number(entryRow.conversionToBase || 1) <= 1}
+                      style={{
+                        width: '54px',
+                        textAlign: 'center',
+                        opacity: (!isTabletOrCapsule(entryRow) && Number(entryRow.conversionToBase || 1) <= 1) ? 0.45 : 1,
+                        background: (!isTabletOrCapsule(entryRow) && Number(entryRow.conversionToBase || 1) <= 1) ? '#f1f5f9' : '#fff'
+                      }}
+                      placeholder={isTabletOrCapsule(entryRow) ? "Loose" : "-"}
+                      title={isTabletOrCapsule(entryRow) ? "Loose tablet/capsule quantity" : "Not applicable for non-strip items"}
                     />
+                    {isTabletOrCapsule(entryRow) && (
+                      <div style={{ fontSize: '9px', color: '#64748b', fontWeight: 600, marginTop: '2px', lineHeight: 1 }}>
+                        Loose
+                      </div>
+                    )}
                   </td>
                   <td className="right font-semibold">
-                    {money(entryRow.mrp)}
+                    {entryRow.mrp !== '' && entryRow.mrp != null ? money(entryRow.mrp) : '-'}
                   </td>
                   <td className="center">
                     <input
@@ -2023,7 +2518,7 @@ export default function AddSalePos() {
                       min="0"
                       max="100"
                       value={entryRow.disc}
-                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, disc: Number(e.target.value || 0) }))}
+                      onChange={(e) => setEntryRow(recalcRow({ ...entryRow, disc: e.target.value === '' ? '' : Number(e.target.value) }))}
                       onKeyDown={(e) => handleEntryKeyDown(e, 'disc')}
                       style={{ width: '46px', textAlign: 'center' }}
                     />
@@ -2043,17 +2538,10 @@ export default function AddSalePos() {
                   return (
                     <tr key={row.id}>
                       <td className="center text-slate-500 font-semibold">{idx + 1}</td>
-                      <td>
-                        <select
-                          value={row.type || 'Rx'}
-                          onChange={(e) => updateExistingRow(row.id, 'type', e.target.value)}
-                          style={{ height: '24px', padding: '0 2px', fontSize: '10px' }}
-                        >
-                          <option>Rx</option>
-                          <option>OTC</option>
-                        </select>
-                      </td>
                       <td className="font-bold text-slate-800">{row.itemName}</td>
+                      <td className="text-slate-600 font-semibold" style={{ fontSize: '10.5px' }}>
+                        {row.pack || '-'}
+                      </td>
                       <td style={{ position: 'relative' }}>
                         <div style={{ display: 'flex', alignItems: 'center' }}>
                           <button
@@ -2149,18 +2637,40 @@ export default function AddSalePos() {
                           type="number"
                           min="0"
                           value={row.qty}
-                          onChange={(e) => updateExistingRow(row.id, 'qty', Math.max(0, Number(e.target.value || 0)))}
+                          onChange={(e) => updateExistingRow(row.id, 'qty', e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
                           style={{ width: '50px', textAlign: 'center', fontWeight: 'bold', height: '24px', padding: '2px 4px' }}
+                          placeholder={isTabletOrCapsule(row) ? "Strips" : "Qty"}
+                          title={isTabletOrCapsule(row) ? "Strip quantity" : "Commercial quantity"}
                         />
+                        {isTabletOrCapsule(row) && (
+                          <div style={{ fontSize: '9px', color: '#64748b', fontWeight: 600, marginTop: '2px', lineHeight: 1 }}>
+                            Strip
+                          </div>
+                        )}
                       </td>
                       <td className="center">
                         <input
                           type="number"
                           min="0"
                           value={row.tabs}
-                          onChange={(e) => updateExistingRow(row.id, 'tabs', Math.max(0, Number(e.target.value || 0)))}
-                          style={{ width: '50px', textAlign: 'center', height: '24px', padding: '2px 4px' }}
+                          onChange={(e) => updateExistingRow(row.id, 'tabs', e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+                          disabled={!isTabletOrCapsule(row) && Number(row.conversionToBase || 1) <= 1}
+                          style={{
+                            width: '50px',
+                            textAlign: 'center',
+                            height: '24px',
+                            padding: '2px 4px',
+                            opacity: (!isTabletOrCapsule(row) && Number(row.conversionToBase || 1) <= 1) ? 0.45 : 1,
+                            background: (!isTabletOrCapsule(row) && Number(row.conversionToBase || 1) <= 1) ? '#f1f5f9' : '#fff'
+                          }}
+                          placeholder={isTabletOrCapsule(row) ? "Loose" : "-"}
+                          title={isTabletOrCapsule(row) ? "Loose tablet/capsule quantity" : "Not applicable for non-strip items"}
                         />
+                        {isTabletOrCapsule(row) && (
+                          <div style={{ fontSize: '9px', color: '#64748b', fontWeight: 600, marginTop: '2px', lineHeight: 1 }}>
+                            Loose
+                          </div>
+                        )}
                       </td>
                       <td className="right font-semibold">{money(row.mrp)}</td>
                       <td className="center">
@@ -2169,7 +2679,7 @@ export default function AddSalePos() {
                           min="0"
                           max="100"
                           value={row.disc}
-                          onChange={(e) => updateExistingRow(row.id, 'disc', Math.max(0, Math.min(100, Number(e.target.value || 0))))}
+                          onChange={(e) => updateExistingRow(row.id, 'disc', e.target.value === '' ? '' : Math.max(0, Math.min(100, Number(e.target.value))))}
                           style={{ width: '42px', textAlign: 'center', height: '24px', padding: '2px 4px' }}
                         />
                       </td>
@@ -2352,7 +2862,7 @@ export default function AddSalePos() {
         </div>
       </div>
 
-      {/* Sticky Bottom Billing Summary Bar matching formula in screenshot */}
+      {/* Sticky Bottom Billing Summary Bar */}
       <div className="pos-bottom-bar">
         <div className="pos-math-formula">
           <div className="pos-math-pill">
@@ -2364,9 +2874,8 @@ export default function AddSalePos() {
             <span>Disc</span>
             <b>{money(calculations.discount)}</b>
           </div>
-          <span>+</span>
-          <div className="pos-math-pill">
-            <span>Tax</span>
+          <div className="pos-math-pill" style={{ opacity: 0.85 }}>
+            <span>Incl. GST</span>
             <b>{money(calculations.tax)}</b>
           </div>
           <span>=</span>
@@ -2386,7 +2895,7 @@ export default function AddSalePos() {
             Save Draft
           </button>
 
-          {isReminderEnabled && selectedCustomerId && (
+          {isReminderEnabled && (selectedCustomerId || customerName) && (
             <button
               type="button"
               onClick={() => saveSaleMutation.mutate({ isDraft: false, sendReminder: true })}
@@ -2406,7 +2915,7 @@ export default function AddSalePos() {
                 boxShadow: '0 2px 4px rgba(5, 150, 105, 0.15)',
                 transition: 'all 0.15s ease',
               }}
-              title="Save bill, record medication schedule, and immediately open WhatsApp reminder to patient"
+              title="Save completed sale, deduct stock, schedule medication reminder, and launch WhatsApp"
             >
               ⏰ Save & Send Reminder
             </button>
@@ -2414,11 +2923,36 @@ export default function AddSalePos() {
 
           <button
             type="button"
-            onClick={() => saveSaleMutation.mutate({ isDraft: false })}
+            onClick={handlePrintButtonClick}
+            disabled={saveSaleMutation.isPending}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              borderRadius: '6px',
+              border: '1px solid #cbd5e1',
+              background: '#f8fafc',
+              color: '#334155',
+              fontSize: '12px',
+              fontWeight: 800,
+              cursor: 'pointer',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+              transition: 'all 0.15s ease',
+            }}
+            title="Save bill and immediately trigger classic physical challan printout"
+          >
+            <Printer size={14} /> Print Bill
+          </button>
+
+          <button
+            type="button"
+            onClick={() => saveSaleMutation.mutate({ isDraft: false, isSaveAndNew: true })}
             disabled={saveSaleMutation.isPending}
             className="pos-bar-btn-add"
+            title="Save completed sale (stock & ledger updated) and open a fresh new sale (Ctrl+Enter / Alt+S)"
           >
-            + Add
+            Save & Add New
           </button>
         </div>
       </div>
@@ -2609,6 +3143,13 @@ export default function AddSalePos() {
           </div>
         </div>
       )}
+
+      {/* Dual-Mode Print Format Selection Modal */}
+      <PrintFormatModal
+        isOpen={showPrintFormatModal}
+        onClose={() => setShowPrintFormatModal(false)}
+        onSelectMode={handleSelectPrintMode}
+      />
     </div>
   );
 }

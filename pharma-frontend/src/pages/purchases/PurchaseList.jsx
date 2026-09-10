@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { CalendarDays, Check, Edit3, Filter, Trash2, X, ReceiptText } from 'lucide-react';
-import api, { unwrap } from '../../lib/api';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { CalendarDays, Check, Edit3, Filter, Trash2, X, ReceiptText, AlertTriangle } from 'lucide-react';
+import api from '../../lib/api';
+import Pagination from '../../components/Pagination';
 
 const money = (value) =>
   new Intl.NumberFormat('en-IN', {
@@ -14,8 +15,21 @@ const money = (value) =>
 
 export default function PurchaseList() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
   const [showFilterDrawer, setShowFilterDrawer] = useState(false);
+  const [selectedPurchaseIds, setSelectedPurchaseIds] = useState([]);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 4500);
+  };
 
   // Filter state matching screenshot
   const [filters, setFilters] = useState({
@@ -30,6 +44,15 @@ export default function PurchaseList() {
   // Draft filters before applying
   const [tempFilters, setTempFilters] = useState({ ...filters });
 
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchTerm(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   const openFilterDrawer = () => {
     setTempFilters({ ...filters });
     setShowFilterDrawer(true);
@@ -37,6 +60,7 @@ export default function PurchaseList() {
 
   const applyFilters = () => {
     setFilters({ ...tempFilters });
+    setPage(1);
     setShowFilterDrawer(false);
   };
 
@@ -51,21 +75,36 @@ export default function PurchaseList() {
     };
     setTempFilters(blank);
     setFilters(blank);
+    setPage(1);
     setShowFilterDrawer(false);
   };
 
   const purchasesQuery = useQuery({
-    queryKey: ['purchases-list', searchTerm, filters.fromDate, filters.toDate],
-    queryFn: async () => unwrap(await api.get('/purchases', {
-      params: {
-        search: searchTerm || undefined,
-        fromDate: filters.fromDate || undefined,
-        toDate: filters.toDate || undefined,
-      },
-    })),
+    queryKey: ['purchases-list', searchTerm, filters.fromDate, filters.toDate, page, limit],
+    queryFn: async () => {
+      const res = await api.get('/purchases', {
+        params: {
+          search: searchTerm || undefined,
+          fromDate: filters.fromDate || undefined,
+          toDate: filters.toDate || undefined,
+          page,
+          limit,
+        },
+      });
+      return res.data;
+    },
   });
 
-  const rawPurchases = purchasesQuery.data || [];
+  const rawPurchases = Array.isArray(purchasesQuery.data?.data)
+    ? purchasesQuery.data.data
+    : (Array.isArray(purchasesQuery.data) ? purchasesQuery.data : []);
+
+  const pagination = purchasesQuery.data?.pagination || {
+    total: rawPurchases.length,
+    page,
+    limit,
+    totalPages: Math.ceil(rawPurchases.length / limit) || 1,
+  };
 
   // Client-side filtering & sorting for amount ranges & custom order
   const purchases = useMemo(() => {
@@ -125,8 +164,89 @@ export default function PurchaseList() {
     };
   }, [purchases]);
 
+  const allFilteredSelected = purchases.length > 0 && purchases.every((p) => selectedPurchaseIds.includes(p.id));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedPurchaseIds([]);
+    } else {
+      setSelectedPurchaseIds(purchases.map((p) => p.id));
+    }
+  };
+
+  const toggleSelectRow = (id, event) => {
+    if (event) event.stopPropagation();
+    setSelectedPurchaseIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteSingle = async (purchase, event) => {
+    if (event) event.stopPropagation();
+    if (!window.confirm(`Move purchase "${purchase.invoiceNumber || purchase.id}" to Trash?\n\nIts attributable stock and ledger effects will be safely reversed.`)) return;
+    try {
+      showToast(`Moving purchase ${purchase.invoiceNumber || purchase.id} to Trash...`, 'info');
+      const res = await api.delete(`/purchases/${purchase.id}`);
+      queryClient.invalidateQueries({ queryKey: ['purchases-list'] });
+      queryClient.invalidateQueries({ queryKey: ['trash', 'purchases'] });
+      setSelectedPurchaseIds((prev) => prev.filter((id) => id !== purchase.id));
+      showToast(res.data?.message || 'Purchase moved to Trash', 'success');
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Failed to move purchase to Trash';
+      showToast(msg, 'error');
+      alert(`Cannot delete purchase: ${msg}`);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!selectedPurchaseIds.length) return;
+    if (!window.confirm(`Move ${selectedPurchaseIds.length} selected purchase(s) to Trash?\n\nAttributable stock and ledger effects will be safely reversed.`)) return;
+    try {
+      showToast(`Moving ${selectedPurchaseIds.length} purchase(s) to Trash...`, 'info');
+      const res = await api.post('/purchases/bulk-trash', { purchaseIds: selectedPurchaseIds });
+      queryClient.invalidateQueries({ queryKey: ['purchases-list'] });
+      queryClient.invalidateQueries({ queryKey: ['trash', 'purchases'] });
+      setSelectedPurchaseIds([]);
+      const summary = res.data?.data;
+      if (summary?.blockedCount > 0) {
+        showToast(`${summary.successCount} purchase(s) moved to Trash, ${summary.blockedCount} blocked (see alerts)`, 'warning');
+        const blockedReasons = summary.results.filter((r) => !r.success).map((r) => r.message).join('\n• ');
+        alert(`Some purchases could not be moved to Trash:\n• ${blockedReasons}`);
+      } else {
+        showToast(res.data?.message || `${selectedPurchaseIds.length} purchases moved to Trash`, 'success');
+      }
+    } catch (err) {
+      const msg = err.response?.data?.message || err.message || 'Failed to move purchases to Trash';
+      showToast(msg, 'error');
+      alert(`Bulk delete failed: ${msg}`);
+    }
+  };
+
   return (
     <div className="pos-container">
+      {/* Toast Notification */}
+      {toast && (
+        <div style={{
+          position: 'fixed',
+          top: '24px',
+          right: '24px',
+          zIndex: 9999,
+          background: toast.type === 'error' ? '#ef4444' : toast.type === 'warning' ? '#f59e0b' : '#10b981',
+          color: '#fff',
+          padding: '12px 20px',
+          borderRadius: '8px',
+          fontWeight: 700,
+          fontSize: '13px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px'
+        }}>
+          <span>{toast.message}</span>
+          <button onClick={() => setToast(null)} style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '14px' }}>✕</button>
+        </div>
+      )}
+
       {/* Top Header Bar */}
       <div className="pos-top-bar">
         <div className="pos-top-left">
@@ -146,38 +266,30 @@ export default function PurchaseList() {
               border: hasActiveFilters ? '1.5px solid #007a70' : '1px solid #c9ded9',
               background: hasActiveFilters ? '#e6f4f0' : '#fff',
               color: hasActiveFilters ? '#007a70' : '#29433e',
-              fontWeight: 700,
-              fontSize: '11.5px',
-              padding: '6px 12px',
+              padding: '6px 14px',
               borderRadius: '6px',
+              fontSize: '11px',
+              fontWeight: 700,
               cursor: 'pointer'
             }}
           >
-            <Filter size={13} />
-            <span>Filters</span>
-            {hasActiveFilters && (
-              <span style={{ background: '#007a70', color: '#fff', fontSize: '9px', borderRadius: '50%', width: '15px', height: '15px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                •
-              </span>
-            )}
+            <Filter size={13} /> Filters {hasActiveFilters && '(Active)'}
           </button>
           <button
             type="button"
-            className="primary-action-btn"
             onClick={() => navigate('/purchases/add')}
             style={{
-              background: '#007a70',
-              color: '#fff',
-              border: 0,
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              fontWeight: 700,
-              fontSize: '11.5px',
-              padding: '7px 16px',
+              border: 'none',
+              background: '#007a70',
+              color: '#fff',
+              padding: '6px 14px',
               borderRadius: '6px',
-              cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(0,122,112,0.28)'
+              fontSize: '11px',
+              fontWeight: 700,
+              cursor: 'pointer'
             }}
           >
             + Add Purchase
@@ -185,21 +297,31 @@ export default function PurchaseList() {
         </div>
       </div>
 
-      <div className="pos-main-body" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         {/* KPI Strip */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
           <div style={{ background: '#fff', padding: '14px 16px', borderRadius: '8px', border: '1px solid #dbe6e3' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Purchases Logged</div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Inward Invoices</div>
             <div style={{ fontSize: '20px', fontWeight: 900, color: '#133e36', marginTop: '4px' }}>
-              {money(metrics.totalPurchases)}
+              {metrics.count}
             </div>
-            <div style={{ fontSize: '10.5px', color: '#007a70', marginTop: '2px', fontWeight: 600 }}>
-              {metrics.count} Consignments Received
+            <div style={{ fontSize: '10.5px', color: '#68827c', marginTop: '2px' }}>
+              Total Bills Recorded
             </div>
           </div>
 
-          <div style={{ background: '#ecfdf5', padding: '14px 16px', borderRadius: '8px', border: '1.5px solid #059669' }}>
-            <div style={{ fontSize: '11px', fontWeight: 800, color: '#059669', textTransform: 'uppercase' }}>Payments Settled</div>
+          <div style={{ background: '#fff', padding: '14px 16px', borderRadius: '8px', border: '1px solid #dbe6e3' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Gross Purchases</div>
+            <div style={{ fontSize: '20px', fontWeight: 900, color: '#007a70', marginTop: '4px' }}>
+              {money(metrics.totalPurchases)}
+            </div>
+            <div style={{ fontSize: '10.5px', color: '#68827c', marginTop: '2px' }}>
+              Cumulative Value
+            </div>
+          </div>
+
+          <div style={{ background: '#fff', padding: '14px 16px', borderRadius: '8px', border: '1px solid #dbe6e3' }}>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Amount Settled</div>
             <div style={{ fontSize: '20px', fontWeight: 900, color: '#059669', marginTop: '4px' }}>
               {money(metrics.totalPaid)}
             </div>
@@ -207,13 +329,13 @@ export default function PurchaseList() {
               Paid to Suppliers
             </div>
           </div>
-
+          
           <div style={{ background: '#fff', padding: '14px 16px', borderRadius: '8px', border: '1px solid #dbe6e3' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Pending Supplier Due</div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#68827c', textTransform: 'uppercase' }}>Pending Due</div>
             <div style={{ fontSize: '20px', fontWeight: 900, color: metrics.totalDue > 0 ? '#e11d48' : '#133e36', marginTop: '4px' }}>
               {money(metrics.totalDue)}
             </div>
-            <div style={{ fontSize: '10.5px', color: metrics.totalDue > 0 ? '#e11d48' : '#68827c', marginTop: '2px', fontWeight: 600 }}>
+            <div style={{ fontSize: '10.5px', color: '#68827c', marginTop: '2px' }}>
               Accounts Payable
             </div>
           </div>
@@ -221,24 +343,69 @@ export default function PurchaseList() {
 
         {/* Filter Strip */}
         <div style={{ background: '#fff', padding: '12px 16px', borderRadius: '8px', border: '1px solid #dbe6e3', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-          <div style={{ position: 'relative', flex: '1 1 320px' }}>
-            <input
-              type="text"
-              placeholder="Search Invoice #, Supplier name, or GSTIN..."
-              style={{
-                width: '100%',
-                height: '34px',
-                padding: '0 12px',
-                borderRadius: '6px',
-                border: '1px solid #cadcd7',
-                fontSize: '11.5px',
-                background: '#fcfdfd',
-                outline: 'none'
-              }}
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
-            />
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flex: '1 1 320px' }}>
+            <div style={{ position: 'relative', flex: '1 1 320px' }}>
+              <input
+                type="text"
+                placeholder="Search Invoice #, Supplier name, or GSTIN..."
+                style={{
+                  width: '100%',
+                  height: '34px',
+                  padding: '0 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #cadcd7',
+                  fontSize: '11.5px',
+                  background: '#fcfdfd',
+                  outline: 'none'
+                }}
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+              />
+            </div>
+
+            {selectedPurchaseIds.length > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '4px 12px', borderRadius: '6px' }}>
+                <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#065f46' }}>
+                  {selectedPurchaseIds.length} selected
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDeleteSelected}
+                  style={{
+                    background: '#dc2626',
+                    color: '#fff',
+                    border: 'none',
+                    padding: '4px 10px',
+                    borderRadius: '4px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}
+                  title="Move selected purchases to Trash"
+                >
+                  <Trash2 size={12} /> Delete Selected
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPurchaseIds([])}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#64748b',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    textDecoration: 'underline'
+                  }}
+                >
+                  Deselect
+                </button>
+              </div>
+            )}
           </div>
+
           {hasActiveFilters && (
             <button
               type="button"
@@ -263,6 +430,15 @@ export default function PurchaseList() {
           <table className="pos-table" style={{ width: '100%' }}>
             <thead>
               <tr>
+                <th style={{ width: '36px', textAlign: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    onChange={toggleSelectAll}
+                    aria-label="Select all visible purchases"
+                    style={{ cursor: 'pointer' }}
+                  />
+                </th>
                 <th>Invoice No.</th>
                 <th>Supplier Name</th>
                 <th>Date</th>
@@ -271,7 +447,7 @@ export default function PurchaseList() {
                 <th className="right">Paid</th>
                 <th className="right">Due Balance</th>
                 <th className="center">Status</th>
-                <th className="center" style={{ width: '130px' }}>Actions</th>
+                <th className="center" style={{ width: '180px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -287,6 +463,15 @@ export default function PurchaseList() {
                     onClick={() => navigate(`/purchases/${purchase.id}`)}
                     style={{ cursor: 'pointer' }}
                   >
+                    <td onClick={(e) => e.stopPropagation()} style={{ width: '36px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedPurchaseIds.includes(purchase.id)}
+                        onChange={(e) => toggleSelectRow(purchase.id, e)}
+                        aria-label={`Select purchase ${purchase.invoiceNumber || purchase.id}`}
+                        style={{ cursor: 'pointer' }}
+                      />
+                    </td>
                     <td style={{ fontFamily: 'monospace', fontWeight: 800, color: '#007a70' }}>
                       {purchase.invoiceNumber || purchase.id}
                     </td>
@@ -367,19 +552,46 @@ export default function PurchaseList() {
                         >
                           <Edit3 size={11} /> Edit
                         </button>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteSingle(purchase, e)}
+                          style={{
+                            border: '1px solid #fecaca',
+                            background: '#fff1f2',
+                            color: '#dc2626',
+                            padding: '3px 8px',
+                            borderRadius: '4px',
+                            fontSize: '10.5px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px'
+                          }}
+                          title="Move purchase to Trash"
+                        >
+                          <Trash2 size={11} /> Delete
+                        </button>
                       </div>
                     </td>
                   </tr>
                 );
               }) : (
                 <tr>
-                  <td colSpan="9" style={{ textAlign: 'center', padding: '32px', color: '#718a84' }}>
+                  <td colSpan="10" style={{ textAlign: 'center', padding: '32px', color: '#718a84' }}>
                     No purchases match the selected filters.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+          <Pagination
+            pagination={pagination}
+            onPageChange={(p) => setPage(p)}
+            onLimitChange={(l) => { setLimit(l); setPage(1); }}
+            pageSizeOptions={[10, 25, 50, 100]}
+            itemLabel="purchase invoices"
+          />
         </div>
       </div>
 

@@ -17,18 +17,18 @@ const createRow = (id) => ({
   productId: '',
   productName: '',
   packing: '',
-  dosageForm: 'Tablet',
+  dosageForm: '',
   hsn: '',
   batchNo: '',
   expiry: '',
-  qty: 1,
-  free: 0,
+  qty: '',
+  free: '',
   mrp: '',
   nmrp: '',
   rate: '',
-  discountPercent: 0,
-  gstPercent: 12,
-  amount: 0,
+  discountPercent: '',
+  gstPercent: '',
+  amount: '',
 });
 
 const recalcRow = (row) => {
@@ -36,6 +36,13 @@ const recalcRow = (row) => {
   const rate = Number(row.rate) || 0;
   const taxPercent = Number(row.gstPercent) || 0;
   const discountPercent = Number(row.discountPercent) || 0;
+
+  if (qty <= 0 || rate <= 0) {
+    return {
+      ...row,
+      amount: '',
+    };
+  }
 
   const taxable = qty * rate;
   const discountAmount = taxable * (discountPercent / 100);
@@ -110,7 +117,7 @@ const dosageFormOptions = [
 const inferDosageFormFromPacking = (packing) => {
   const raw = String(packing || '').trim();
   const lower = raw.toLowerCase();
-  if (!lower) return 'Tablet';
+  if (!lower) return '';
 
   // 1. Inhalers & Rotacaps
   if (lower.includes('inhaler') || lower.includes('rotacap') || lower.includes('inhalation') || lower.includes('respule')) {
@@ -141,12 +148,12 @@ const inferDosageFormFromPacking = (packing) => {
   if (lower.includes('suppository')) return 'Suppository';
   if (lower.includes('bar')) return 'Bar';
 
-  // 7. Multipliers like 1x10, 12x10, 10x10, 1x15, 1x30, 10s, 10's -> default to Tablet
+  // 7. Multipliers like 1x10, 12x10, 10x10, 1x15, 1x30, 10s, 10's
   if (/\d+\s*[x*×]\s*\d+/i.test(lower) || /^\d+/.test(lower)) {
     return 'Tablet';
   }
 
-  return 'Tablet';
+  return '';
 };
 
 const packCategories = [
@@ -163,9 +170,9 @@ export default function AddPurchaseForm() {
   const draftIdFromQuery = queryParams.get('draft');
   const editIdFromQuery = queryParams.get('edit');
   const [header, setHeader] = useState(defaultHeader());
-  const [rows, setRows] = useState([createRow(Date.now())]);
+  const [rows, setRows] = useState([]);
   const [entryRow, setEntryRow] = useState(createRow(Date.now() + 1));
-  const [roundOff, setRoundOff] = useState(0);
+  const [roundOff, setRoundOff] = useState('');
   const [supplierSearch, setSupplierSearch] = useState('');
   const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
   const [draftId, setDraftId] = useState(null);
@@ -271,29 +278,33 @@ export default function AddPurchaseForm() {
     };
 
     const safeRows = Array.isArray(purchaseData?.items) && purchaseData.items.length
-      ? purchaseData.items.map((item, index) => ({
-          ...createRow(Date.now() + index),
-          id: `${item.id || Date.now() + index}`,
-          productId: item.productId || '',
-          productName: item.product?.name || '',
-          packing: item.product?.packaging?.[0]?.name || '',
-          dosageForm: item.product?.dosageForm || 'Tablet',
-          hsn: item.product?.hsnCode || '',
-          batchNo: item.batch?.batchNumber || '',
-          expiry: item.batch?.expiryDate ? new Date(item.batch.expiryDate).toISOString().slice(0, 10) : '',
-          qty: Number(item.quantity || 1),
-          free: Number(item.freeQuantity || 0),
-          mrp: String(item.mrp || 0),
-          nmrp: String(item.sellingPrice || item.mrp || 0),
-          rate: String(item.purchasePrice || 0),
-          discountPercent: Number(item.discountPercent || 0),
-          gstPercent: Number(item.cgstPercent || 0) + Number(item.sgstPercent || 0) || 12,
-        }))
-      : [createRow(Date.now())];
+      ? purchaseData.items.map((item, index) => {
+          const rawGst = Number(item.cgstPercent || 0) + Number(item.sgstPercent || 0) || Number(item.gstPercent || 0);
+          const validGst = [5, 12, 18].includes(rawGst) ? String(rawGst) : (rawGst > 0 ? String(rawGst) : '');
+          return {
+            ...createRow(Date.now() + index),
+            id: `${item.id || Date.now() + index}`,
+            productId: item.productId || '',
+            productName: item.product?.name || item.productName || '',
+            packing: item.product?.packaging?.[0]?.name || item.packing || '',
+            dosageForm: item.product?.dosageForm || item.dosageForm || '',
+            hsn: item.product?.hsnCode || item.hsnCode || '',
+            batchNo: item.batch?.batchNumber || item.batchNumber || '',
+            expiry: item.batch?.expiryDate ? new Date(item.batch.expiryDate).toISOString().slice(0, 10) : (item.expiryDate ? new Date(item.expiryDate).toISOString().slice(0, 10) : ''),
+            qty: item.quantity !== undefined && item.quantity !== null && item.quantity !== '' ? String(item.quantity) : '',
+            free: item.freeQuantity !== undefined && item.freeQuantity !== null && item.freeQuantity !== '' ? String(item.freeQuantity) : '',
+            mrp: item.mrp !== undefined && item.mrp !== null && item.mrp !== '' ? String(item.mrp) : '',
+            nmrp: item.sellingPrice !== undefined && item.sellingPrice !== null && item.sellingPrice !== '' ? String(item.sellingPrice) : (item.mrp !== undefined && item.mrp !== null && item.mrp !== '' ? String(item.mrp) : ''),
+            rate: item.purchasePrice !== undefined && item.purchasePrice !== null && item.purchasePrice !== '' ? String(item.purchasePrice) : '',
+            discountPercent: item.discountPercent !== undefined && item.discountPercent !== null && item.discountPercent !== '' ? String(item.discountPercent) : '',
+            gstPercent: validGst,
+          };
+        })
+      : [];
 
     setHeader(nextHeader);
     setRows(safeRows.map((row) => recalcRow(row)));
-    setRoundOff(Number(purchaseData?.roundOff || 0));
+    setRoundOff(purchaseData?.roundOff !== undefined && purchaseData?.roundOff !== null ? String(purchaseData.roundOff) : '');
     if (isEdit) {
       setEditingPurchaseId(purchaseData?.id || null);
     } else {
@@ -337,33 +348,35 @@ export default function AddPurchaseForm() {
   const supplierOptions = suppliersQuery.data || [];
   const productOptions = useMemo(() => {
     return (productsQuery.data || []).flatMap((product) => {
+      const rawGst = Number(product.gstPercent ?? product.taxRate);
+      const validGst = [5, 12, 18].includes(rawGst) ? String(rawGst) : '';
       const safeBatches = Array.isArray(product.batches) ? product.batches : [];
       return safeBatches.length
         ? safeBatches.map((batch) => ({
             productId: product.id,
             value: `${product.name} ${batch.batchNumber || ''}`.trim(),
             label: product.name,
-            packing: product.packaging?.[0]?.name || '1x10',
-            dosageForm: product.dosageForm || 'Tablet',
+            packing: product.packaging?.[0]?.name || '',
+            dosageForm: product.dosageForm || '',
             hsn: product.hsnCode || '',
             batchNo: batch.batchNumber || '',
             expiry: batch.expiryDate ? batch.expiryDate.slice(0, 10) : '',
-            mrp: Number(batch.sellingPrice || batch.mrp || 0),
-            rate: Number(batch.purchasePrice || product.purchasePrice || 0),
-            gstPercent: Number(product.gstPercent || 12),
+            mrp: batch.sellingPrice || batch.mrp || '',
+            rate: batch.purchasePrice || product.purchasePrice || '',
+            gstPercent: validGst,
           }))
         : [{
             productId: product.id,
             value: product.name,
             label: product.name,
-            packing: product.packaging?.[0]?.name || '1x10',
-            dosageForm: product.dosageForm || 'Tablet',
+            packing: product.packaging?.[0]?.name || '',
+            dosageForm: product.dosageForm || '',
             hsn: product.hsnCode || '',
             batchNo: '',
             expiry: '',
-            mrp: 0,
-            rate: 0,
-            gstPercent: Number(product.gstPercent || 12),
+            mrp: product.mrp || '',
+            rate: product.purchasePrice || '',
+            gstPercent: validGst,
           }];
     });
   }, [productsQuery.data]);
@@ -616,6 +629,8 @@ export default function AddPurchaseForm() {
   };
 
   const applySuggestedProduct = (rowId, product) => {
+    const rawGst = Number(product.gstPercent);
+    const validGst = [5, 12, 18].includes(rawGst) ? String(rawGst) : '';
     setRows((prev) =>
       prev.map((row) => {
         if (row.id !== rowId) return row;
@@ -628,9 +643,10 @@ export default function AddPurchaseForm() {
           hsn: product.hsn,
           batchNo: product.batchNo,
           expiry: product.expiry,
-          mrp: String(product.mrp || 0),
-          rate: String(product.rate || 0),
-          gstPercent: Number(product.gstPercent || 12),
+          mrp: product.mrp !== undefined && product.mrp !== null ? String(product.mrp) : '',
+          nmrp: product.mrp !== undefined && product.mrp !== null ? String(product.mrp) : '',
+          rate: product.rate !== undefined && product.rate !== null ? String(product.rate) : '',
+          gstPercent: validGst,
         };
         return recalcRow(next);
       })
@@ -638,6 +654,8 @@ export default function AddPurchaseForm() {
   };
 
   const applyEntrySuggestion = (product) => {
+    const rawGst = Number(product.gstPercent);
+    const validGst = [5, 12, 18].includes(rawGst) ? String(rawGst) : '';
     const inferredDosage = product.dosageForm || inferDosageFormFromPacking(product.packing);
     setEntryRow((prev) => recalcRow({
       ...prev,
@@ -648,9 +666,10 @@ export default function AddPurchaseForm() {
       hsn: product.hsn,
       batchNo: product.batchNo,
       expiry: product.expiry,
-      mrp: String(product.mrp || 0),
-      rate: String(product.rate || 0),
-      gstPercent: Number(product.gstPercent || 12),
+      mrp: product.mrp !== undefined && product.mrp !== null ? String(product.mrp) : '',
+      nmrp: product.mrp !== undefined && product.mrp !== null ? String(product.mrp) : '',
+      rate: product.rate !== undefined && product.rate !== null ? String(product.rate) : '',
+      gstPercent: validGst,
     }));
   };
 
@@ -717,13 +736,33 @@ export default function AddPurchaseForm() {
   };
 
   const totals = useMemo(() => {
-    const subtotal = rows.reduce((sum, row) => sum + (Number(row.qty) || 0) * (Number(row.rate) || 0), 0);
-    const discountAmount = rows.reduce((sum, row) => {
+    const allActiveRows = [...rows];
+    if ((entryRow.productName || entryRow.productId || Number(entryRow.rate || 0) > 0) && Number(entryRow.qty || 0) > 0) {
+      allActiveRows.push(entryRow);
+    }
+    const hasData = allActiveRows.some(
+      (row) => (Number(row.qty) || 0) > 0 && (Number(row.rate) || 0) > 0
+    );
+
+    if (!hasData) {
+      return {
+        hasData: false,
+        subtotal: 0,
+        discountAmount: 0,
+        gstAmount: 0,
+        cgstAmount: 0,
+        sgstAmount: 0,
+        grandTotal: 0,
+      };
+    }
+
+    const subtotal = allActiveRows.reduce((sum, row) => sum + (Number(row.qty) || 0) * (Number(row.rate) || 0), 0);
+    const discountAmount = allActiveRows.reduce((sum, row) => {
       const taxable = (Number(row.qty) || 0) * (Number(row.rate) || 0);
       return sum + taxable * ((Number(row.discountPercent) || 0) / 100);
     }, 0);
 
-    const gstAmount = rows.reduce((sum, row) => {
+    const gstAmount = allActiveRows.reduce((sum, row) => {
       const taxable = (Number(row.qty) || 0) * (Number(row.rate) || 0);
       const discount = taxable * ((Number(row.discountPercent) || 0) / 100);
       return sum + (taxable - discount) * ((Number(row.gstPercent) || 0) / 100);
@@ -731,9 +770,10 @@ export default function AddPurchaseForm() {
 
     const cgstAmount = gstAmount / 2;
     const sgstAmount = gstAmount / 2;
-    const grandTotal = subtotal - discountAmount + gstAmount + Number(roundOff || 0);
+    const grandTotal = subtotal - discountAmount + gstAmount + (Number(roundOff) || 0);
 
     return {
+      hasData: true,
       subtotal,
       discountAmount,
       gstAmount,
@@ -741,7 +781,7 @@ export default function AddPurchaseForm() {
       sgstAmount,
       grandTotal,
     };
-  }, [rows, roundOff]);
+  }, [rows, entryRow, roundOff]);
 
   const handleTableKeyDown = (event, rowId, index) => {
     if (event.key === 'Enter') {
@@ -848,25 +888,25 @@ export default function AddPurchaseForm() {
         <div className="purchase-table-wrap purchase-fast-table-wrap">
           <table className="purchase-table purchase-fast-table">
             <colgroup>
-              <col style={{ width: '32px' }} />
-              <col style={{ width: '18%' }} />
-              <col style={{ width: '7%' }} />
-              <col style={{ width: '8%' }} />
+              <col style={{ width: '36px' }} />
+              <col style={{ width: '16%' }} />
               <col style={{ width: '6.5%' }} />
+              <col style={{ width: '10.5%' }} />
+              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '7%' }} />
+              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '4.5%' }} />
+              <col style={{ width: '4%' }} />
+              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '5.5%' }} />
+              <col style={{ width: '4.5%' }} />
               <col style={{ width: '7.5%' }} />
               <col style={{ width: '6.5%' }} />
-              <col style={{ width: '5%' }} />
-              <col style={{ width: '4.5%' }} />
-              <col style={{ width: '6.5%' }} />
-              <col style={{ width: '6.5%' }} />
-              <col style={{ width: '6.5%' }} />
-              <col style={{ width: '5.5%' }} />
-              <col style={{ width: '5.5%' }} />
-              <col style={{ width: '7%' }} />
             </colgroup>
             <thead>
               <tr>
-                <th className="action-column-head">Action</th>
+                <th className="action-column-head" title="Action">Act</th>
                 <th>Product Name</th>
                 <th>Packing</th>
                 <th>Dosage Form</th>
@@ -876,7 +916,7 @@ export default function AddPurchaseForm() {
                 <th>Qty</th>
                 <th>Free</th>
                 <th>MRP</th>
-                <th>NMRP</th>
+                <th title="NMRP (New MRP)">NMRP</th>
                 <th>Rate</th>
                 <th>Disc %</th>
                 <th>GST %</th>
@@ -941,11 +981,12 @@ export default function AddPurchaseForm() {
                     ref={(node) => {
                       entryFieldRefs.current.dosageForm = node;
                     }}
-                    value={entryRow.dosageForm || 'Tablet'}
+                    value={entryRow.dosageForm || ''}
                     onChange={(event) => setEntryRow((prev) => ({ ...prev, dosageForm: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'dosageForm')}
                     className="entry-input entry-select"
                   >
+                    <option value="">Select Dosage Form</option>
                     {dosageFormOptions.map((form) => (
                       <option key={form} value={form}>{form}</option>
                     ))}
@@ -1004,7 +1045,7 @@ export default function AddPurchaseForm() {
                     value={entryRow.qty || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, qty: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'qty')}
-                    placeholder="0"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
@@ -1018,7 +1059,7 @@ export default function AddPurchaseForm() {
                     value={entryRow.free || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, free: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'free')}
-                    placeholder="0"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
@@ -1033,7 +1074,7 @@ export default function AddPurchaseForm() {
                     value={entryRow.mrp || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, mrp: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'mrp')}
-                    placeholder="0.00"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
@@ -1048,7 +1089,7 @@ export default function AddPurchaseForm() {
                     value={entryRow.nmrp || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, nmrp: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'nmrp')}
-                    placeholder="0.00"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
@@ -1063,7 +1104,7 @@ export default function AddPurchaseForm() {
                     value={entryRow.rate || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, rate: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'rate')}
-                    placeholder="0.00"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
@@ -1078,27 +1119,28 @@ export default function AddPurchaseForm() {
                     value={entryRow.discountPercent || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, discountPercent: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'discountPercent')}
-                    placeholder="0"
+                    placeholder=""
                     className="entry-input num-input"
                   />
                 </td>
                 <td>
-                  <input
+                  <select
                     ref={(node) => {
                       entryFieldRefs.current.gstPercent = node;
                     }}
-                    type="number"
-                    min="0"
-                    step="0.01"
                     value={entryRow.gstPercent || ''}
                     onChange={(event) => setEntryRow((prev) => recalcRow({ ...prev, gstPercent: event.target.value }))}
                     onKeyDown={(event) => handleEntryKeyDown(event, 'gstPercent')}
-                    placeholder="12"
-                    className="entry-input num-input"
-                  />
+                    className="entry-input entry-select"
+                  >
+                    <option value="">Select GST</option>
+                    <option value="5">5%</option>
+                    <option value="12">12%</option>
+                    <option value="18">18%</option>
+                  </select>
                 </td>
                 <td className="amount-cell">
-                  <span>₹{((entryRow.qty || 0) * (entryRow.rate || 0)).toFixed(2)}</span>
+                  <span>{entryRow.amount && Number(entryRow.amount) > 0 ? money(entryRow.amount) : '—'}</span>
                 </td>
               </tr>
               {rows.map((row, index) => (
@@ -1145,11 +1187,12 @@ export default function AddPurchaseForm() {
                   </td>
                   <td>
                     <select
-                      value={row.dosageForm || 'Tablet'}
+                      value={row.dosageForm || ''}
                       onChange={(e) => updateRow(row.id, 'dosageForm', e.target.value)}
                       onKeyDown={(event) => handleTableKeyDown(event, row.id, index)}
                       className="table-select-input"
                     >
+                      <option value="">Select Dosage Form</option>
                       {dosageFormOptions.map((form) => (
                         <option key={form} value={form}>{form}</option>
                       ))}
@@ -1183,9 +1226,19 @@ export default function AddPurchaseForm() {
                     <input type="number" min="0" step="0.01" value={row.discountPercent} onChange={(e) => updateRow(row.id, 'discountPercent', e.target.value)} onKeyDown={(event) => handleTableKeyDown(event, row.id, index)} />
                   </td>
                   <td>
-                    <input type="number" min="0" step="0.01" value={row.gstPercent} onChange={(e) => updateRow(row.id, 'gstPercent', e.target.value)} onKeyDown={(event) => handleTableKeyDown(event, row.id, index)} />
+                    <select
+                      value={row.gstPercent || ''}
+                      onChange={(e) => updateRow(row.id, 'gstPercent', e.target.value)}
+                      onKeyDown={(event) => handleTableKeyDown(event, row.id, index)}
+                      className="table-select-input"
+                    >
+                      <option value="">Select GST</option>
+                      <option value="5">5%</option>
+                      <option value="12">12%</option>
+                      <option value="18">18%</option>
+                    </select>
                   </td>
-                  <td className="amount-cell">{money(row.amount)}</td>
+                  <td className="amount-cell">{row.amount && Number(row.amount) > 0 ? money(row.amount) : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -1283,27 +1336,34 @@ export default function AddPurchaseForm() {
           <div className="purchase-summary purchase-summary-panel">
             <div className="summary-row">
               <span>SUB TOTAL</span>
-              <strong>{money(totals.subtotal)}</strong>
+              <strong>{totals.hasData ? money(totals.subtotal) : '—'}</strong>
             </div>
             <div className="summary-row">
               <span>DISCOUNT AMOUNT</span>
-              <strong>{money(totals.discountAmount)}</strong>
+              <strong>{totals.hasData ? money(totals.discountAmount) : '—'}</strong>
             </div>
             <div className="summary-row">
-              <span>CGST Amount</span>
-              <strong>{money(totals.cgstAmount)}</strong>
+              <span>CGST AMOUNT</span>
+              <strong>{totals.hasData ? money(totals.cgstAmount) : '—'}</strong>
             </div>
             <div className="summary-row">
-              <span>SGST Amount</span>
-              <strong>{money(totals.sgstAmount)}</strong>
+              <span>SGST AMOUNT</span>
+              <strong>{totals.hasData ? money(totals.sgstAmount) : '—'}</strong>
             </div>
             <div className="summary-row">
               <span>ROUND OFF</span>
-              <input type="number" step="0.01" value={roundOff} onChange={(e) => setRoundOff(Number(e.target.value) || 0)} className="roundoff-input" />
+              <input
+                type="number"
+                step="0.01"
+                value={roundOff}
+                onChange={(e) => setRoundOff(e.target.value)}
+                className="roundoff-input"
+                placeholder=""
+              />
             </div>
             <div className="summary-row grand-total">
               <span>GRAND TOTAL</span>
-              <strong>{money(totals.grandTotal)}</strong>
+              <strong>{totals.hasData ? money(totals.grandTotal) : '—'}</strong>
             </div>
             <div className="purchase-bottom-actions">
               {autoSaveState.status === 'saving' && (

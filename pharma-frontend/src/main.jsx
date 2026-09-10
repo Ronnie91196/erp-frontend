@@ -24,6 +24,7 @@ import CollectionReport from "./pages/CollectionReport";
 import ScheduleDrugs from "./pages/ScheduleDrugs";
 import Restocks from "./pages/Restocks";
 import BillingNotes from "./pages/BillingNotes";
+import OrderNotes from "./pages/OrderNotes";
 import AdvancedSalesReport from "./pages/AdvancedSalesReport";
 import PurchasesReport from "./pages/PurchasesReport";
 import BulkInvoicing from "./pages/BulkInvoicing";
@@ -42,6 +43,7 @@ import DrugsTrash from "./pages/trash/DrugsTrash";
 import CustomersTrash from "./pages/trash/CustomersTrash";
 import SuppliersTrash from "./pages/trash/SuppliersTrash";
 import PurchasesTrash from "./pages/trash/PurchasesTrash";
+import Settings from "./pages/settings/Settings";
 import AyushmanSales from "./pages/sales/AyushmanSales";
 const qc = new QueryClient({
   defaultOptions: {
@@ -224,6 +226,22 @@ function App() {
         element={
           <Guard>
             <BillingNotes />
+          </Guard>
+        }
+      />
+      <Route
+        path="/order-notes"
+        element={
+          <Guard>
+            <OrderNotes />
+          </Guard>
+        }
+      />
+      <Route
+        path="/modules/order-notes"
+        element={
+          <Guard>
+            <OrderNotes />
           </Guard>
         }
       />
@@ -411,6 +429,9 @@ function App() {
 
       {/* Accounting Reports Routes */}
       <Route path="/modules/accounting-reports" element={<Guard><AccountingReports /></Guard>} />
+
+      {/* Settings & Configuration Route */}
+      <Route path="/settings" element={<Guard><Settings /></Guard>} />
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

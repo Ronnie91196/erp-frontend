@@ -1,12 +1,15 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Search, Plus, RotateCcw, Printer,
   Calendar, Clock, DollarSign, CreditCard,
-  FileText, Share2, MessageSquare
+  FileText, Share2, MessageSquare, Edit3
 } from 'lucide-react';
-import api, { unwrap } from '../../lib/api';
+import api from '../../lib/api';
+import Pagination from '../../components/Pagination';
+import { generateClassicPrintHtml } from '../../utils/classicPrintSlip';
+import PrintFormatModal from '../../components/PrintFormatModal';
 
 function money(value) {
   return new Intl.NumberFormat('en-IN', {
@@ -20,7 +23,10 @@ function money(value) {
 export default function SalesList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [paymentFilter, setPaymentFilter] = useState('ALL');
   const [paymentMethodFilter, setPaymentMethodFilter] = useState('ALL');
@@ -28,20 +34,33 @@ export default function SalesList() {
   const [toDate, setToDate] = useState('');
   const [selectedSale, setSelectedSale] = useState(null);
 
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   const salesQuery = useQuery({
-    queryKey: ['sales-list', search, statusFilter, paymentFilter, paymentMethodFilter, fromDate, toDate],
+    queryKey: ['sales-list', search, statusFilter, paymentFilter, fromDate, toDate, page, limit],
     queryFn: async () => {
       const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(limit));
       if (search) params.append('search', search);
       if (statusFilter !== 'ALL') params.append('status', statusFilter);
       if (paymentFilter !== 'ALL') params.append('paymentStatus', paymentFilter);
       if (fromDate) params.append('fromDate', fromDate);
       if (toDate) params.append('toDate', toDate);
-      return unwrap(await api.get(`/sales?${params.toString()}`));
+      const res = await api.get(`/sales?${params.toString()}`);
+      return res.data;
     },
   });
 
-  const rawSales = salesQuery.data || [];
+  const rawSales = Array.isArray(salesQuery.data?.data) ? salesQuery.data.data : (Array.isArray(salesQuery.data) ? salesQuery.data : []);
+  const pagination = salesQuery.data?.pagination || { total: rawSales.length, page, limit, totalPages: Math.ceil(rawSales.length / limit) || 1 };
   const sales = useMemo(() => {
     if (paymentMethodFilter === 'ALL') return rawSales;
     return rawSales.filter((s) => (s.payments?.[0]?.paymentMethod || 'CASH').toUpperCase() === paymentMethodFilter);
@@ -68,100 +87,34 @@ export default function SalesList() {
     return { totalSalesCount, totalRevenue, totalPaid, totalDue, completedCount: completedSales.length };
   }, [sales]);
 
+  const [printModalSale, setPrintModalSale] = useState(null);
+
   const handlePrint = (sale) => {
+    if (!sale) return;
+    setPrintModalSale(sale);
+  };
+
+  const executePrint = (mode = 'actual') => {
+    const sale = printModalSale;
+    setPrintModalSale(null);
+    if (!sale) return;
+
     const printWin = window.open('', '_blank');
     if (!printWin) return window.alert('Pop-up blocked. Allow pop-ups to print invoices.');
-    const dateStr = sale.invoiceDate ? new Date(sale.invoiceDate).toLocaleDateString('en-IN') : '-';
-    const itemsHtml = (sale.items || []).map((item, idx) => `
-      <tr>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; text-align: center;">${idx + 1}</td>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee;">
-          <b>${item.product?.name || 'Medicine'}</b>
-          <div style="font-size: 10px; color: #666;">Batch: ${item.batch?.batchNumber || '—'} | Exp: ${item.batch?.expiryDate ? new Date(item.batch.expiryDate).toLocaleDateString('en-IN', { month: '2-digit', year: '2-digit' }) : '—'}</div>
-        </td>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity || 1}</td>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; text-align: right;">₹${Number(item.unitPrice || 0).toFixed(2)}</td>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; text-align: right;">${item.discountPercent || 0}%</td>
-        <td style="padding: 6px 8px; border-bottom: 1px solid #eee; text-align: right;"><b>₹${Number(item.totalAmount || 0).toFixed(2)}</b></td>
-      </tr>
-    `).join('');
-
-    printWin.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Invoice - ${sale.invoiceNumber}</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 24px; color: #111; font-size: 12px; }
-            .header { display: flex; justify-content: space-between; border-bottom: 2px solid #007a70; padding-bottom: 12px; margin-bottom: 16px; }
-            .title { font-size: 20px; font-weight: bold; color: #007a70; }
-            .inv-meta { text-align: right; }
-            table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-            th { background: #f0f7f5; color: #133e36; padding: 8px; text-align: left; font-size: 11px; }
-            .summary { width: 280px; margin-left: auto; margin-top: 16px; font-size: 12px; }
-            .summary-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px dashed #ddd; }
-            .net-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; font-weight: bold; border-top: 2px solid #007a70; margin-top: 4px; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <div>
-              <div class="title">PHARMA CARE</div>
-              <div>Retail & Clinical Pharmacy</div>
-              <div style="font-size: 11px; color: #555; margin-top: 4px;">Customer: <b>${sale.customer?.name || 'Cash Sale'}</b> ${sale.customer?.phone ? `(${sale.customer.phone})` : ''}</div>
-              ${sale.doctor ? `<div style="font-size: 11px; color: #555;">Doctor: <b>${sale.doctor}</b></div>` : ''}
-            </div>
-            <div class="inv-meta">
-              <div style="font-size: 16px; font-weight: bold; color: #111;">INVOICE</div>
-              <div style="font-family: monospace; font-weight: bold; margin-top: 2px;"># ${sale.invoiceNumber}</div>
-              <div style="color: #666; font-size: 11px; margin-top: 2px;">Date: ${dateStr}</div>
-              <div style="color: #666; font-size: 11px;">Status: <b>${sale.status}</b> | ${sale.paymentStatus}</div>
-            </div>
-          </div>
-
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 30px; text-align: center;">#</th>
-                <th>Item & Batch</th>
-                <th style="width: 50px; text-align: center;">Qty</th>
-                <th style="width: 80px; text-align: right;">Price</th>
-                <th style="width: 60px; text-align: right;">Disc</th>
-                <th style="width: 90px; text-align: right;">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${itemsHtml}
-            </tbody>
-          </table>
-
-          <div class="summary">
-            <div class="summary-row"><span>Sub Total:</span><span>₹${Number(sale.subtotal || 0).toFixed(2)}</span></div>
-            <div class="summary-row"><span>Discount:</span><span>- ₹${Number(sale.discountAmount || 0).toFixed(2)}</span></div>
-            <div class="summary-row"><span>GST (CGST+SGST):</span><span>+ ₹${(Number(sale.cgstAmount || 0) + Number(sale.sgstAmount || 0)).toFixed(2)}</span></div>
-            ${Number(sale.roundOff || 0) !== 0 ? `<div class="summary-row"><span>Round Off:</span><span>₹${Number(sale.roundOff || 0).toFixed(2)}</span></div>` : ''}
-            <div class="net-row"><span>Grand Total:</span><span>₹${Number(sale.totalAmount || 0).toFixed(2)}</span></div>
-            <div class="summary-row" style="color: #047857; font-weight: 600;"><span>Paid Amount:</span><span>₹${Number(sale.paidAmount || 0).toFixed(2)}</span></div>
-            ${Number(sale.dueAmount || 0) > 0 ? `<div class="summary-row" style="color: #e11d48; font-weight: 700;"><span>Due Amount:</span><span>₹${Number(sale.dueAmount || 0).toFixed(2)}</span></div>` : ''}
-          </div>
-
-          <div style="margin-top: 36px; text-align: center; font-size: 10px; color: #888; border-top: 1px solid #eee; padding-top: 12px;">
-            Thank you for your visit! Medicines once sold cannot be returned without original cash memo.
-          </div>
-          <script>window.print();</script>
-        </body>
-      </html>
-    `);
+    const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
+    const html = generateClassicPrintHtml(sale, user?.store, mode);
+    printWin.document.open();
+    printWin.document.write(html);
     printWin.document.close();
   };
 
   return (
-    <div className="pos-container">
+    <div className="pos-container bg-brand-surface">
       {/* Top Header Bar */}
-      <div className="pos-top-bar">
+      <div className="pos-top-bar bg-white border-b border-slate-200">
         <div className="pos-top-left">
-          <h1 className="pos-top-title" style={{ fontSize: '18px', fontWeight: 800, color: '#133e36', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <FileText size={20} color="#007a70" /> Sales & Billing Invoices
+          <h1 className="pos-top-title" style={{ fontSize: '18px', fontWeight: 800, color: '#0F172A', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <FileText size={20} color="#059669" /> Sales & Billing Invoices
           </h1>
         </div>
         <div className="pos-top-actions">
@@ -169,7 +122,7 @@ export default function SalesList() {
             onClick={() => navigate('/sales/add')}
             className="pos-bar-btn-add"
             style={{
-              background: '#007a70',
+              background: '#059669',
               color: '#fff',
               display: 'flex',
               alignItems: 'center',
@@ -179,7 +132,7 @@ export default function SalesList() {
               borderRadius: '6px',
               border: 0,
               cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(0,122,112,0.28)'
+              boxShadow: '0 2px 6px rgba(5, 150, 105, 0.28)'
             }}
           >
             <Plus size={16} /> + New Sale Bill
@@ -237,8 +190,8 @@ export default function SalesList() {
           <div style={{ position: 'relative', flex: '1 1 240px', minWidth: '220px' }}>
             <Search size={15} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#7a928c' }} />
             <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search invoice #, customer name, mobile, doctor..."
               style={{
                 width: '100%',
@@ -436,9 +389,9 @@ export default function SalesList() {
                         {money(sale.totalAmount)}
                       </td>
                       <td className="right" style={{ fontSize: '11px' }}>
-                        <div style={{ fontWeight: 700, color: '#059669' }}>{money(sale.paidAmount)}</div>
+                        <div style={{ fontWeight: 700, color: '#2E7D68' }}>{money(sale.paidAmount)}</div>
                         {Number(sale.dueAmount || 0) > 0 && (
-                          <div style={{ fontSize: '10px', fontWeight: 800, color: '#e11d48' }}>Due: {money(sale.dueAmount)}</div>
+                          <div style={{ fontSize: '10px', fontWeight: 800, color: '#C53030' }}>Due: {money(sale.dueAmount)}</div>
                         )}
                       </td>
                       <td className="center">
@@ -449,9 +402,9 @@ export default function SalesList() {
                           fontSize: '10px',
                           fontWeight: 800,
                           textTransform: 'uppercase',
-                          background: isCompleted ? '#edf7f5' : '#fef3c7',
-                          color: isCompleted ? '#007a70' : '#b45309',
-                          border: isCompleted ? '1px solid #b7d6ce' : '1px solid #fde68a'
+                          background: isCompleted ? '#E8F3EE' : '#FEF3C7',
+                          color: isCompleted ? '#2E7D68' : '#B45309',
+                          border: isCompleted ? '1px solid #D1E6DC' : '1px solid #FDE68A'
                         }}>
                           {sale.status}
                         </span>
@@ -464,15 +417,25 @@ export default function SalesList() {
                           fontSize: '10px',
                           fontWeight: 800,
                           textTransform: 'uppercase',
-                          background: isPaid ? '#ecfdf5' : isPartial ? '#fffbeb' : '#fff1f2',
-                          color: isPaid ? '#047857' : isPartial ? '#b45309' : '#e11d48',
-                          border: isPaid ? '1px solid #a7f3d0' : isPartial ? '1px solid #fde68a' : '1px solid #fecaca'
+                          background: isPaid ? '#E8F3EE' : isPartial ? '#FFFBEB' : '#FDF2F2',
+                          color: isPaid ? '#2E7D68' : isPartial ? '#B45309' : '#C53030',
+                          border: isPaid ? '1px solid #D1E6DC' : isPartial ? '1px solid #FDE68A' : '1px solid #FED7D7'
                         }}>
                           {sale.paymentStatus}
                         </span>
                       </td>
                       <td className="center" onClick={(e) => e.stopPropagation()}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                          {sale.status === 'DRAFT' && (
+                            <button
+                              type="button"
+                              onClick={() => navigate(`/sales/add?draftId=${sale.id}`)}
+                              className="text-brand-primary bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                              title="Edit / Resume Draft"
+                            >
+                              <Edit3 size={12} /> Edit
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setSelectedSale(sale)}
@@ -513,7 +476,9 @@ export default function SalesList() {
                               onClick={() => {
                                 const shareUrl = `${window.location.origin}/p/bill/${sale.id}`;
                                 const customerName = sale.customer?.name || 'Valued Customer';
-                                const msg = `Hello ${customerName}, here is your digital receipt for Bill #${sale.invoiceNumber}: ${shareUrl}`;
+                                const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
+                                const pharmacyName = sale.store?.name || user?.store?.name || 'Gurukripa Medical & Surgical Stores';
+                                const msg = `*💊 ${pharmacyName}*\n\nHello *${customerName}*,\nThank you for choosing us! Below is your official digital invoice and customized medication schedule for Bill *#${sale.invoiceNumber}*:\n\n🔗 ${shareUrl}\n\n_Wish you a speedy recovery!_`;
                                 const phone = (sale.customer?.phone || '').replace(/[^0-9]/g, '');
                                 if (phone) {
                                   window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -526,13 +491,14 @@ export default function SalesList() {
                                 borderRadius: '4px',
                                 border: '1px solid #a7f3d0',
                                 background: '#ecfdf5',
-                                color: '#16a34a',
+                                color: '#059669',
                                 fontSize: '10.5px',
                                 fontWeight: 700,
                                 cursor: 'pointer',
                                 display: 'inline-flex',
                                 alignItems: 'center',
                                 gap: '3px',
+                                transition: 'all 0.15s ease',
                               }}
                               title="Share on WhatsApp"
                             >
@@ -547,6 +513,18 @@ export default function SalesList() {
               </tbody>
             </table>
           </div>
+
+          {/* Pagination Controls */}
+          <Pagination
+            pagination={pagination}
+            onPageChange={(newPage) => setPage(newPage)}
+            onLimitChange={(newLimit) => {
+              setLimit(newLimit);
+              setPage(1);
+            }}
+            pageSizeOptions={[10, 25, 50, 100]}
+            itemLabel="sales invoices"
+          />
         </div>
       </div>
 
@@ -629,6 +607,18 @@ export default function SalesList() {
                     }}
                   >
                     <RotateCcw size={13} /> Return Medicines
+                  </button>
+                )}
+                {selectedSale.status === 'DRAFT' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSale(null);
+                      navigate(`/sales/add?draftId=${selectedSale.id}`);
+                    }}
+                    className="text-brand-primary bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    <Edit3 size={13} /> Resume / Edit Draft
                   </button>
                 )}
                 <button
@@ -777,17 +767,25 @@ export default function SalesList() {
                 {/* Accounting & Math Pill Box */}
                 <div style={{ background: '#f8faf9', padding: '14px 18px', borderRadius: '8px', border: '1px solid #e2ece9' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px' }}>
-                    <div style={{ display: 'flex', justifySelf: 'space-between', justifyContent: 'space-between', color: '#68827c' }}>
-                      <span>Sub Total</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
+                      <span>Sub Total (MRP)</span>
                       <b>{money(selectedSale.subtotal)}</b>
                     </div>
+                    {Number(selectedSale.discountAmount || 0) > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
+                        <span>Discount</span>
+                        <b>- {money(selectedSale.discountAmount)}</b>
+                      </div>
+                    )}
+                    {Number(selectedSale.taxableAmount || 0) > 0 && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
+                        <span>Taxable Value</span>
+                        <b>{money(selectedSale.taxableAmount)}</b>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
-                      <span>Discount</span>
-                      <b>- {money(selectedSale.discountAmount)}</b>
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
-                      <span>Tax (CGST + SGST)</span>
-                      <b>+ {money(Number(selectedSale.cgstAmount || 0) + Number(selectedSale.sgstAmount || 0))}</b>
+                      <span>GST (CGST + SGST)</span>
+                      <b style={{ color: '#0d695b' }}>{money(Number(selectedSale.cgstAmount || 0) + Number(selectedSale.sgstAmount || 0))} <span style={{ fontSize: '10px', fontWeight: 500 }}>(Incl.)</span></b>
                     </div>
                     {Number(selectedSale.roundOff || 0) !== 0 && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', color: '#68827c' }}>
@@ -855,7 +853,9 @@ export default function SalesList() {
                     onClick={() => {
                       const shareUrl = `${window.location.origin}/p/bill/${selectedSale.id}`;
                       const customerName = selectedSale.customer?.name || 'Valued Customer';
-                      const msg = `Hello ${customerName}, here is your digital receipt for Bill #${selectedSale.invoiceNumber}: ${shareUrl}`;
+                      const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
+                      const pharmacyName = selectedSale.store?.name || user?.store?.name || 'Gurukripa Medical & Surgical Stores';
+                      const msg = `*💊 ${pharmacyName}*\n\nHello *${customerName}*,\nThank you for choosing us! Below is your official digital invoice and customized medication schedule for Bill *#${selectedSale.invoiceNumber}*:\n\n🔗 ${shareUrl}\n\n_Wish you a speedy recovery!_`;
                       const phone = (selectedSale.customer?.phone || '').replace(/[^0-9]/g, '');
                       if (phone) {
                         window.open(`https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, '_blank');
@@ -864,9 +864,9 @@ export default function SalesList() {
                       }
                     }}
                     style={{
-                      border: '1px solid #a7f3d0',
-                      background: '#ecfdf5',
-                      color: '#059669',
+                      border: '1px solid #059669',
+                      background: '#059669',
+                      color: '#ffffff',
                       padding: '6px 14px',
                       borderRadius: '6px',
                       fontSize: '11.5px',
@@ -875,6 +875,8 @@ export default function SalesList() {
                       display: 'flex',
                       alignItems: 'center',
                       gap: '6px',
+                      boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
+                      transition: 'all 0.15s ease',
                     }}
                   >
                     <MessageSquare size={13} /> Share on WhatsApp
@@ -884,9 +886,9 @@ export default function SalesList() {
                   type="button"
                   onClick={() => handlePrint(selectedSale)}
                   style={{
-                    border: '1px solid #cadcd7',
-                    background: '#edf7f5',
-                    color: '#007a70',
+                    border: '1px solid #cbd5e1',
+                    background: '#f8fafc',
+                    color: '#0F172A',
                     padding: '6px 14px',
                     borderRadius: '6px',
                     fontSize: '11.5px',
@@ -894,7 +896,7 @@ export default function SalesList() {
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '6px',
+                    gap: '6px'
                   }}
                 >
                   <Printer size={13} /> Print Bill
@@ -920,6 +922,13 @@ export default function SalesList() {
           </div>
         </div>
       )}
+
+      {/* Dual-Mode Print Format Selection Modal */}
+      <PrintFormatModal
+        isOpen={Boolean(printModalSale)}
+        onClose={() => setPrintModalSale(null)}
+        onSelectMode={executePrint}
+      />
     </div>
   );
 }

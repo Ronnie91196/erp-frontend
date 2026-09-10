@@ -44,8 +44,16 @@ import {
   Phone,
   MessageSquare,
   Check,
+  ClipboardList,
+  Store,
+  Building2,
+  Building,
+  Edit,
+  Edit3,
+  Settings2,
 } from 'lucide-react';
 import api, { unwrap } from '../lib/api';
+import appLogo from '../assets/appLogo.png';
 
 const menuGroups = [
   {
@@ -57,10 +65,10 @@ const menuGroups = [
   },
   {
     key: 'drugs',
-    label: 'Drugs',
+    label: 'Stock',
     icon: Pill,
     items: [
-      { label: 'Drug List', to: '/products', icon: Package },
+      { label: 'Product List', to: '/products', icon: Package },
       { label: 'Billing Notes', to: '/modules/billing-notes', icon: NotebookPen },
       { label: 'Trash', to: '/modules/drugs-trash', icon: Trash2 },
     ],
@@ -111,6 +119,7 @@ const menuGroups = [
     icon: BadgeDollarSign,
     items: [
       { label: 'Purchase List', to: '/purchases', icon: ReceiptText },
+      { label: 'Order Notes (Daily)', to: '/order-notes', icon: ClipboardList },
       { label: 'Purchase Returns', to: '/modules/purchase-returns', icon: ArrowLeftRight },
       { label: 'Add Purchase', to: '/purchases/add', icon: Plus },
       { label: 'Trash', to: '/modules/purchases-trash', icon: Trash2 },
@@ -130,6 +139,13 @@ const menuGroups = [
     standalone: true,
     items: [{ label: 'Reports Hub', to: '/modules/reports-hub', icon: BarChart3 }],
   },
+  {
+    key: 'settings',
+    label: 'Settings',
+    icon: Settings,
+    standalone: true,
+    items: [{ label: 'Settings', to: '/settings', icon: Settings }],
+  },
 ];
 
 export default function Layout({ children }) {
@@ -138,7 +154,8 @@ export default function Layout({ children }) {
   const [open, setOpen] = React.useState(false);
   const [isCollapsed, setIsCollapsed] = React.useState(false);
   const [expandedMenus, setExpandedMenus] = React.useState([]);
-  const user = JSON.parse(localStorage.getItem('pharma_user') || 'null');
+  const [currentUser, setCurrentUser] = React.useState(() => JSON.parse(localStorage.getItem('pharma_user') || 'null'));
+  const user = currentUser;
 
   // Global Search State
   const [globalSearchInput, setGlobalSearchInput] = React.useState('');
@@ -251,6 +268,147 @@ export default function Layout({ children }) {
     }
   };
 
+  // Store Switcher State
+  const [isStoreSwitcherOpen, setIsStoreSwitcherOpen] = React.useState(false);
+  const [storesList, setStoresList] = React.useState([]);
+  const [isStoreLoading, setIsStoreLoading] = React.useState(false);
+  const [showNewStoreModal, setShowNewStoreModal] = React.useState(false);
+  const [newStoreForm, setNewStoreForm] = React.useState({
+    name: '',
+    phone: '',
+    city: '',
+    state: '',
+    address: '',
+    gstin: '',
+    dlNumber: '',
+  });
+  const [newStoreError, setNewStoreError] = React.useState('');
+  const [isCreatingStore, setIsCreatingStore] = React.useState(false);
+
+  // Edit Store Profile State
+  const [showEditStoreModal, setShowEditStoreModal] = React.useState(false);
+  const [editStoreForm, setEditStoreForm] = React.useState({
+    name: '',
+    phone: '',
+    city: '',
+    state: '',
+    address: '',
+    gstin: '',
+    dlNumber: '',
+  });
+  const [editStoreError, setEditStoreError] = React.useState('');
+  const [isUpdatingStore, setIsUpdatingStore] = React.useState(false);
+
+  const storeSwitcherRef = React.useRef(null);
+
+  const fetchStores = React.useCallback(async () => {
+    try {
+      setIsStoreLoading(true);
+      const res = unwrap(await api.get('/stores/my-stores'));
+      setStoresList(Array.isArray(res) ? res : (res?.data || []));
+    } catch (e) {
+      console.warn('Stores fetch warning:', e);
+    } finally {
+      setIsStoreLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchStores();
+  }, [fetchStores]);
+
+  const handleSwitchStore = async (targetStoreId) => {
+    try {
+      setIsStoreLoading(true);
+      const res = await api.post('/stores/switch', { storeId: targetStoreId });
+      if (res.data?.success) {
+        const { token, user: updatedUser } = res.data.data;
+        localStorage.setItem('pharma_token', token);
+        localStorage.setItem('pharma_user', JSON.stringify(updatedUser));
+        setCurrentUser(updatedUser);
+        setIsStoreSwitcherOpen(false);
+        // Instant reload to re-query with fully isolated data
+        window.location.reload();
+      }
+    } catch (e) {
+      alert(e.response?.data?.message || 'Failed to switch store');
+    } finally {
+      setIsStoreLoading(false);
+    }
+  };
+
+  const handleCreateNewStore = async (e) => {
+    e.preventDefault();
+    if (!newStoreForm.name.trim()) {
+      setNewStoreError('Store name is required');
+      return;
+    }
+    setNewStoreError('');
+    setIsCreatingStore(true);
+    try {
+      const res = await api.post('/stores', newStoreForm);
+      if (res.data?.success) {
+        setShowNewStoreModal(false);
+        setNewStoreForm({ name: '', phone: '', city: '', state: '', address: '', gstin: '', dlNumber: '' });
+        // Automatically switch to the newly created store
+        const newId = res.data.data?.id;
+        if (newId) {
+          await handleSwitchStore(newId);
+        } else {
+          fetchStores();
+        }
+      }
+    } catch (e) {
+      setNewStoreError(e.response?.data?.message || 'Failed to create store');
+    } finally {
+      setIsCreatingStore(false);
+    }
+  };
+
+  const handleOpenEditStore = (storeToEdit = null) => {
+    const target = storeToEdit || user?.store || {};
+    setEditStoreForm({
+      id: target.id || user?.storeId || '',
+      name: target.name || user?.store?.name || '',
+      phone: target.phone || user?.store?.phone || '',
+      city: target.city || user?.store?.city || '',
+      state: target.state || user?.store?.state || '',
+      address: target.address || user?.store?.address || '',
+      gstin: target.gstin || user?.store?.gstin || '',
+      dlNumber: target.dlNumber || user?.store?.dlNumber || '',
+    });
+    setEditStoreError('');
+    setIsStoreSwitcherOpen(false);
+    setShowEditStoreModal(true);
+  };
+
+  const handleUpdateStoreProfile = async (e) => {
+    e.preventDefault();
+    if (!editStoreForm.name.trim()) {
+      setEditStoreError('Store / Pharmacy name is required');
+      return;
+    }
+    setEditStoreError('');
+    setIsUpdatingStore(true);
+    try {
+      const endpoint = editStoreForm.id ? `/stores/${editStoreForm.id}` : '/stores/current';
+      const res = await api.put(endpoint, editStoreForm);
+      if (res.data?.success) {
+        const updatedStore = res.data.data?.store;
+        const updatedUserData = res.data.data?.user || { ...user, store: updatedStore };
+        localStorage.setItem('pharma_user', JSON.stringify(updatedUserData));
+        setCurrentUser(updatedUserData);
+        setShowEditStoreModal(false);
+        await fetchStores();
+        alert(`Pharmacy profile successfully updated to "${updatedStore.name}"!`);
+      }
+    } catch (e) {
+      setEditStoreError(e.response?.data?.message || 'Failed to update store profile');
+    } finally {
+      setIsUpdatingStore(false);
+    }
+  };
+
   const isPurchaseAddRoute = location.pathname === '/purchases/add' || location.pathname.startsWith('/purchases/add/') || location.pathname === '/modules/create-debit-note' || location.pathname === '/sales/add' || location.pathname.startsWith('/sales/add/');
 
   React.useEffect(() => {
@@ -276,6 +434,9 @@ export default function Layout({ children }) {
       }
       if (remindersDropdownRef.current && !remindersDropdownRef.current.contains(event.target)) {
         setIsRemindersOpen(false);
+      }
+      if (storeSwitcherRef.current && !storeSwitcherRef.current.contains(event.target)) {
+        setIsStoreSwitcherOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -360,11 +521,52 @@ export default function Layout({ children }) {
       </button>
 
       <aside className={sidebarClass}>
-        <div className="brand-wrap">
-          <div className="brand-badge">M</div>
-          <div className="brand-copy">
-            <b>Mediflux</b>
-            <small>ERP</small>
+        <div className="brand-wrap" style={{ padding: '10px 8px 16px', borderBottom: '1px solid rgba(255,255,255,0.14)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Official OTOddy SSDN PHARMAORA Brand Mark */}
+          <div
+            style={{
+              width: '42px',
+              height: '42px',
+              borderRadius: '12px',
+              background: '#ffffff',
+              padding: '2px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 14px rgba(0, 0, 0, 0.2), 0 0 0 1.5px rgba(255,255,255,0.4)',
+              position: 'relative',
+              flexShrink: 0,
+              overflow: 'hidden'
+            }}
+          >
+            <img
+              src={appLogo}
+              alt="SSDN PHARMAORA"
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain'
+              }}
+            />
+          </div>
+
+          <div className="brand-copy" style={{ display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+              <span style={{ fontSize: '13px', fontWeight: 900, letterSpacing: '0.12em', color: '#5eead4', textTransform: 'uppercase', fontFamily: "'Outfit', sans-serif" }}>
+                SSDN
+              </span>
+              <span style={{ fontSize: '14.5px', fontWeight: 900, letterSpacing: '0.04em', color: '#ffffff', fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                PHARMAORA
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ fontSize: '8.5px', fontWeight: 800, color: '#fcd34d', letterSpacing: '0.08em', textTransform: 'uppercase', background: 'rgba(252, 211, 77, 0.15)', padding: '1px 5px', borderRadius: '4px', border: '1px solid rgba(252, 211, 77, 0.3)' }}>
+                BY OTODDY
+              </span>
+              <span style={{ fontSize: '9px', color: '#99f6e4', opacity: 0.85, fontWeight: 600, letterSpacing: '0.04em' }}>
+                NextGen Rx
+              </span>
+            </div>
           </div>
           <button className="mobile-close" onClick={() => setOpen(false)} type="button">
             <X size={18} />
@@ -607,6 +809,40 @@ export default function Layout({ children }) {
                 {/* Divider */}
                 <div style={{ height: '1px', background: '#edf4f2', margin: '4px 0' }} />
 
+                {/* Edit Pharmacy Profile in User Popover */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProfileOpen(false);
+                    handleOpenEditStore(user?.store);
+                  }}
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '9px',
+                    padding: '8px 10px',
+                    background: 'transparent',
+                    border: 0,
+                    borderRadius: '6px',
+                    fontSize: '11.5px',
+                    fontWeight: 600,
+                    color: '#007a70',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background 0.15s ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = '#eef8f5';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'transparent';
+                  }}
+                >
+                  <Building2 size={14} color="#007a70" />
+                  <span>Edit Pharmacy Profile</span>
+                </button>
+
                 {/* Account Settings */}
                 <button
                   type="button"
@@ -791,7 +1027,7 @@ export default function Layout({ children }) {
                     {globalSearchResults.products?.length > 0 && (
                       <div style={{ borderBottom: '1px solid #edf4f2', paddingBottom: '4px' }}>
                         <div style={{ padding: '6px 14px', fontSize: '10.5px', fontWeight: 800, color: '#007a70', textTransform: 'uppercase', letterSpacing: '0.5px', display: 'flex', alignItems: 'center', gap: '6px', background: '#f4faf8' }}>
-                          <Pill size={12} /> Drugs & Medicines ({globalSearchResults.products.length})
+                          <Pill size={12} /> Stock & Products ({globalSearchResults.products.length})
                         </div>
                         {globalSearchResults.products.map((p) => {
                           const stockCount = (p.batches || []).reduce((acc, b) => acc + (b.stocks || []).reduce((sAcc, s) => sAcc + Number(s.quantity || 0), 0), 0);
@@ -1383,7 +1619,7 @@ export default function Layout({ children }) {
                                       <Phone size={10} /> Call
                                     </a>
                                     <a
-                                      href={`https://wa.me/91${rem.customer.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hello ${rem.customer.name}! Thank you for your visit. View your digital bill and medication dosage tracker here: ${window.location.origin}/p/bill/${rem.saleId || rem.id}`)}`}
+                                      href={`https://wa.me/91${rem.customer.phone.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hello ${rem.customer.name}! Gentle reminder from ${user?.store?.name || 'our pharmacy'}. View your digital bill and medication dosage tracker here: ${window.location.origin}/p/bill/${rem.saleId || rem.id}`)}`}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       style={{
@@ -1454,6 +1690,265 @@ export default function Layout({ children }) {
               )}
             </div>
 
+            {/* Medical Store Switcher */}
+            <div ref={storeSwitcherRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setIsStoreSwitcherOpen((prev) => !prev)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '6px 12px',
+                  borderRadius: '10px',
+                  border: '1.5px solid #007a70',
+                  background: isStoreSwitcherOpen ? '#f0fdf9' : '#ffffff',
+                  cursor: 'pointer',
+                  boxShadow: '0 2px 4px rgba(0,122,112,0.08)',
+                  transition: 'all 0.15s ease',
+                }}
+                title="Active Medical Store Profile - Click to switch"
+              >
+                <span style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '6px',
+                  background: '#007a70',
+                  color: '#ffffff'
+                }}>
+                  <Store size={14} />
+                </span>
+                <div style={{ textAlign: 'left', lineHeight: 1.2 }}>
+                  <div style={{ fontSize: '10px', fontWeight: 800, color: '#0d9488', textTransform: 'uppercase', letterSpacing: '0.4px' }}>
+                    Active Pharmacy
+                  </div>
+                  <div style={{ fontSize: '12.5px', fontWeight: 900, color: '#0f172a', maxWidth: '170px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {user?.store?.name || 'Main Pharmacy'}
+                  </div>
+                </div>
+                <ChevronDown size={14} color="#007a70" style={{ transform: isStoreSwitcherOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s ease' }} />
+              </button>
+
+              {/* Store Switcher Dropdown Popover */}
+              {isStoreSwitcherOpen && (
+                <div style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  right: 0,
+                  width: '320px',
+                  background: '#ffffff',
+                  borderRadius: '12px',
+                  border: '1px solid #cbd5e1',
+                  boxShadow: '0 12px 30px rgba(0,0,0,0.15)',
+                  zIndex: 999999,
+                  overflow: 'hidden',
+                  animation: 'fadeIn 0.15s ease'
+                }}>
+                  {/* Dropdown Header */}
+                  <div style={{ padding: '12px 14px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a' }}>Switch Medical Store</div>
+                      <div style={{ fontSize: '10.5px', color: '#64748b' }}>Select store profile for isolated data</div>
+                    </div>
+                    <span style={{ fontSize: '10.5px', fontWeight: 800, background: '#edf7f5', color: '#007a70', padding: '2px 6px', borderRadius: '10px' }}>
+                      {storesList.length} Stores
+                    </span>
+                  </div>
+
+                  {/* Store List */}
+                  <div style={{ maxHeight: '250px', overflowY: 'auto', padding: '6px' }}>
+                    {isStoreLoading && storesList.length === 0 ? (
+                      <div style={{ padding: '16px', textAlign: 'center', fontSize: '11.5px', color: '#64748b' }}>
+                        Loading pharmacy profiles...
+                      </div>
+                    ) : (
+                      storesList.map((st) => {
+                        const isCurrent = st.isCurrentStore || st.id === user?.storeId || st.id === user?.store?.id;
+                        return (
+                          <div
+                            key={st.id}
+                            onClick={() => !isCurrent && handleSwitchStore(st.id)}
+                            style={{
+                              padding: '10px 12px',
+                              borderRadius: '8px',
+                              marginBottom: '4px',
+                              cursor: isCurrent ? 'default' : 'pointer',
+                              background: isCurrent ? '#f0fdf9' : '#ffffff',
+                              border: isCurrent ? '1.5px solid #007a70' : '1px solid #f1f5f9',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              transition: 'all 0.15s ease'
+                            }}
+                            onMouseEnter={(e) => {
+                              if (!isCurrent) e.currentTarget.style.background = '#f8fafc';
+                            }}
+                            onMouseLeave={(e) => {
+                              if (!isCurrent) e.currentTarget.style.background = '#ffffff';
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+                              <div style={{
+                                width: '28px',
+                                height: '28px',
+                                borderRadius: '6px',
+                                background: isCurrent ? '#007a70' : '#f1f5f9',
+                                color: isCurrent ? '#ffffff' : '#64748b',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center'
+                              }}>
+                                <Building2 size={15} />
+                              </div>
+                              <div>
+                                <div style={{ fontSize: '12px', fontWeight: 800, color: isCurrent ? '#007a70' : '#0f172a' }}>
+                                  {st.name}
+                                </div>
+                                <div style={{ fontSize: '10.5px', color: '#64748b' }}>
+                                  {st.city || 'Pharmacy'}{st.phone ? ` • ${st.phone}` : ''}
+                                </div>
+                              </div>
+                            </div>
+
+                            {isCurrent ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '3px',
+                                  fontSize: '10.5px',
+                                  fontWeight: 800,
+                                  color: '#007a70',
+                                  background: '#ccfbf1',
+                                  padding: '2px 7px',
+                                  borderRadius: '12px'
+                                }}>
+                                  <Check size={11} strokeWidth={3} /> Active
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditStore(st);
+                                  }}
+                                  title="Edit Pharmacy Name & Profile"
+                                  style={{
+                                    border: '1px solid #007a70',
+                                    background: '#ffffff',
+                                    color: '#007a70',
+                                    borderRadius: '5px',
+                                    padding: '3px 7px',
+                                    fontSize: '10px',
+                                    fontWeight: 700,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                >
+                                  <Edit3 size={11} /> Edit
+                                </button>
+                              </div>
+                            ) : (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleOpenEditStore(st);
+                                  }}
+                                  title="Edit Store Profile"
+                                  style={{
+                                    border: '1px solid #e2e8f0',
+                                    background: '#ffffff',
+                                    color: '#64748b',
+                                    borderRadius: '5px',
+                                    padding: '2px 6px',
+                                    fontSize: '10px',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '2px',
+                                  }}
+                                >
+                                  <Edit3 size={10} />
+                                </button>
+                                <span style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>
+                                  Switch →
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Add Store & Edit Current Store Action Footer */}
+                  <div style={{ padding: '8px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditStore(user?.store)}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        padding: '7px 12px',
+                        background: '#ffffff',
+                        color: '#007a70',
+                        border: '1.5px solid #007a70',
+                        borderRadius: '6px',
+                        fontSize: '11.5px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.background = '#f0fdf9';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = '#ffffff';
+                      }}
+                    >
+                      <Edit3 size={13} /> Edit Active Pharmacy Profile
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsStoreSwitcherOpen(false);
+                        setShowNewStoreModal(true);
+                      }}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        padding: '7px 12px',
+                        background: '#007a70',
+                        color: '#ffffff',
+                        border: 0,
+                        borderRadius: '6px',
+                        fontSize: '11.5px',
+                        fontWeight: 800,
+                        cursor: 'pointer',
+                        boxShadow: '0 2px 4px rgba(0,122,112,0.2)'
+                      }}
+                    >
+                      <Plus size={14} /> + Add Another Medical Store
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="user-pill">
               <div className="mini-avatar">{user?.name?.[0] || 'U'}</div>
               <div className="user-meta">
@@ -1466,6 +1961,389 @@ export default function Layout({ children }) {
         </header>
 
         <div className="content-shell">{children}</div>
+
+        {/* Add Medical Store Modal */}
+        {showNewStoreModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(15, 23, 42, 0.5)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999999,
+            padding: '16px'
+          }}>
+            <div style={{
+              background: '#ffffff',
+              borderRadius: '12px',
+              border: '1px solid #cbd5e1',
+              maxWidth: '480px',
+              width: '100%',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                padding: '16px 20px',
+                background: '#f8fafc',
+                borderBottom: '1px solid #e2e8f0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Store size={18} color="#007a70" />
+                  <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#0f172a' }}>
+                    Create New Medical Store Profile
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowNewStoreModal(false)}
+                  style={{ background: 'transparent', border: 0, color: '#94a3b8', fontSize: '18px', cursor: 'pointer', fontWeight: 700 }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form onSubmit={handleCreateNewStore} style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {newStoreError && (
+                  <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                    {newStoreError}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                    Pharmacy / Medical Store Name <span style={{ color: '#ef4444' }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. SSDN Pharma - Branch 2, City Chemist"
+                    value={newStoreForm.name}
+                    onChange={(e) => setNewStoreForm({ ...newStoreForm, name: e.target.value })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      Contact Phone
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 9876543210"
+                      value={newStoreForm.phone}
+                      onChange={(e) => setNewStoreForm({ ...newStoreForm, phone: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      City
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Jabalpur"
+                      value={newStoreForm.city}
+                      onChange={(e) => setNewStoreForm({ ...newStoreForm, city: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      State
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Madhya Pradesh"
+                      value={newStoreForm.state}
+                      onChange={(e) => setNewStoreForm({ ...newStoreForm, state: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                    Shop Address (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Shop No. 4, Hospital Road, Civil Lines"
+                    value={newStoreForm.address}
+                    onChange={(e) => setNewStoreForm({ ...newStoreForm, address: e.target.value })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      GSTIN Number (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 23AAAAA0000A1Z5"
+                      value={newStoreForm.gstin}
+                      onChange={(e) => setNewStoreForm({ ...newStoreForm, gstin: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      Drug License (DL) No. (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. DL-20B-12345, 21B-12345"
+                      value={newStoreForm.dlNumber}
+                      onChange={(e) => setNewStoreForm({ ...newStoreForm, dlNumber: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewStoreModal(false)}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      background: '#ffffff',
+                      color: '#64748b',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isCreatingStore}
+                    style={{
+                      padding: '8px 18px',
+                      borderRadius: '6px',
+                      border: 0,
+                      background: '#007a70',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      boxShadow: '0 2px 4px rgba(0,122,112,0.2)'
+                    }}
+                  >
+                    {isCreatingStore ? 'Creating Profile...' : 'Save & Switch Store'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+        {/* Edit Medical Store Profile Modal */}
+        {showEditStoreModal && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(15, 23, 42, 0.55)',
+            backdropFilter: 'blur(3px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999999,
+            padding: '16px'
+          }}>
+            <div style={{
+              background: '#ffffff',
+              borderRadius: '12px',
+              border: '1px solid #cbd5e1',
+              maxWidth: '520px',
+              width: '100%',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.2)',
+              overflow: 'hidden'
+            }}>
+              <div style={{
+                padding: '16px 20px',
+                background: '#f8fafc',
+                borderBottom: '1px solid #e2e8f0',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Edit3 size={18} color="#007a70" />
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#0f172a' }}>
+                      Edit Pharmacy Profile & Branding
+                    </h3>
+                    <div style={{ fontSize: '10.5px', color: '#64748b' }}>
+                      Updates name, state, GST, DL number, bills, prints & WhatsApp messages
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowEditStoreModal(false)}
+                  style={{ background: 'transparent', border: 0, color: '#94a3b8', fontSize: '18px', cursor: 'pointer', fontWeight: 700 }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form onSubmit={handleUpdateStoreProfile} style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {editStoreError && (
+                  <div style={{ padding: '8px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', color: '#ef4444', fontSize: '12px' }}>
+                    {editStoreError}
+                  </div>
+                )}
+
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                    Pharmacy / Medical Store Name <span style={{ color: '#ef4444' }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. SSDN Super Specialty Medicos"
+                    value={editStoreForm.name}
+                    onChange={(e) => setEditStoreForm({ ...editStoreForm, name: e.target.value })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1.5px solid #007a70', fontSize: '12.5px', fontWeight: 700, outline: 'none' }}
+                  />
+                  <span style={{ fontSize: '10px', color: '#64748b', marginTop: '2px', display: 'block' }}>
+                    This name appears on the header badge, all printed receipts, digital bills, and WhatsApp notifications.
+                  </span>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      Contact Phone
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 9876543210"
+                      value={editStoreForm.phone}
+                      onChange={(e) => setEditStoreForm({ ...editStoreForm, phone: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      City
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Jabalpur"
+                      value={editStoreForm.city}
+                      onChange={(e) => setEditStoreForm({ ...editStoreForm, city: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      State
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Madhya Pradesh"
+                      value={editStoreForm.state}
+                      onChange={(e) => setEditStoreForm({ ...editStoreForm, state: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                    Shop Address
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Shop No. 4, Hospital Road, Civil Lines"
+                    value={editStoreForm.address}
+                    onChange={(e) => setEditStoreForm({ ...editStoreForm, address: e.target.value })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      GSTIN Number (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 23AAAAA0000A1Z5"
+                      value={editStoreForm.gstin}
+                      onChange={(e) => setEditStoreForm({ ...editStoreForm, gstin: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', fontWeight: 700, color: '#334155', display: 'block', marginBottom: '4px' }}>
+                      Drug License (DL) No. (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. DL-20B-12345, 21B-12345"
+                      value={editStoreForm.dlNumber}
+                      onChange={(e) => setEditStoreForm({ ...editStoreForm, dlNumber: e.target.value })}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontSize: '12px', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowEditStoreModal(false)}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      background: '#ffffff',
+                      color: '#64748b',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isUpdatingStore}
+                    style={{
+                      padding: '8px 18px',
+                      borderRadius: '6px',
+                      border: 0,
+                      background: '#007a70',
+                      color: '#ffffff',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      cursor: 'pointer',
+                      boxShadow: '0 2px 4px rgba(0,122,112,0.2)'
+                    }}
+                  >
+                    {isUpdatingStore ? 'Saving Changes...' : 'Save Pharmacy Profile'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

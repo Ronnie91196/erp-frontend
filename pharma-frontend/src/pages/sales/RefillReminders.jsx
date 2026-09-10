@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   CalendarCheck,
@@ -18,12 +18,16 @@ import {
   RotateCcw,
   ExternalLink,
 } from 'lucide-react';
-import api, { unwrap } from '../../lib/api';
+import api from '../../lib/api';
+import Pagination from '../../components/Pagination';
 
 export default function RefillReminders() {
   const queryClient = useQueryClient();
   const [filterTab, setFilterTab] = useState('ALL'); // 'TODAY', 'UPCOMING', 'OVERDUE', 'COMPLETED', 'ALL'
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
   const [showAddModal, setShowAddModal] = useState(false);
 
   // New Reminder Form State
@@ -39,11 +43,21 @@ export default function RefillReminders() {
     notes: '',
   });
 
+  // Debounce search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   // Queries
   const { data: remindersRes, isLoading, refetch } = useQuery({
-    queryKey: ['refill-reminders-page', filterTab],
+    queryKey: ['refill-reminders-page', filterTab, search, page, limit],
     queryFn: async () => {
-      const params = {};
+      const params = { page, limit };
+      if (search) params.search = search;
       if (filterTab === 'TODAY') {
         params.filter = 'TODAY';
       } else if (filterTab === 'UPCOMING') {
@@ -55,7 +69,8 @@ export default function RefillReminders() {
       } else if (filterTab === 'ALL') {
         params.status = 'ALL';
       }
-      return unwrap(await api.get('/reminders', { params }));
+      const res = await api.get('/reminders', { params });
+      return res.data;
     },
   });
 
@@ -67,20 +82,16 @@ export default function RefillReminders() {
     },
   });
 
-  const rawReminders = remindersRes?.reminders || [];
-  const stats = remindersRes?.stats || { todayCount: 0, totalPendingCount: 0 };
+  const rawReminders = remindersRes?.data?.reminders || remindersRes?.reminders || [];
+  const stats = remindersRes?.data?.stats || remindersRes?.stats || { todayCount: 0, totalPendingCount: 0 };
+  const pagination = remindersRes?.pagination || {
+    total: rawReminders.length,
+    page,
+    limit,
+    totalPages: Math.ceil(rawReminders.length / limit) || 1,
+  };
 
-  const reminders = useMemo(() => {
-    if (!search.trim()) return rawReminders;
-    const q = search.toLowerCase().trim();
-    return rawReminders.filter(
-      (r) =>
-        r.drugName?.toLowerCase().includes(q) ||
-        r.customer?.name?.toLowerCase().includes(q) ||
-        r.customer?.phone?.includes(q) ||
-        r.sale?.invoiceNumber?.toLowerCase().includes(q)
-    );
-  }, [rawReminders, search]);
+  const reminders = rawReminders;
 
   // Mutations
   const updateStatusMutation = useMutation({
@@ -273,8 +284,8 @@ export default function RefillReminders() {
           <input
             type="text"
             placeholder="Search patient, medicine, or bill #..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             style={{
               width: '100%',
               padding: '6px 10px 6px 30px',
@@ -332,8 +343,10 @@ export default function RefillReminders() {
                   const isDue = new Date(rem.reminderDate).toDateString() === new Date().toDateString();
                   const isOverdue = new Date(rem.reminderDate) < new Date() && !isCompleted && !isDue;
 
+                  const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
+                  const pharmacyName = user?.store?.name || 'our pharmacy';
                   const shareUrl = rem.saleId ? `${window.location.origin}/p/bill/${rem.saleId}` : window.location.origin;
-                  const waMessage = `Hello ${rem.customer?.name || 'Customer'}! This is a gentle reminder from Main Pharmacy for your medicine: ${rem.drugName} (${rem.timesPerDay}x daily - ${mealText}). Track here: ${shareUrl}`;
+                  const waMessage = `Hello ${rem.customer?.name || 'Customer'}! This is a gentle reminder from ${pharmacyName} for your medicine: ${rem.drugName} (${rem.timesPerDay}x daily - ${mealText}). Track here: ${shareUrl}`;
 
                   return (
                     <tr
@@ -520,6 +533,13 @@ export default function RefillReminders() {
               )}
             </tbody>
           </table>
+          <Pagination
+            pagination={pagination}
+            onPageChange={(p) => setPage(p)}
+            onLimitChange={(l) => { setLimit(l); setPage(1); }}
+            pageSizeOptions={[10, 25, 50, 100]}
+            itemLabel="reminders"
+          />
         </div>
       </div>
 

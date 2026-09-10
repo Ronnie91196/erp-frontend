@@ -58,18 +58,18 @@ export default function AyushmanSales() {
   }, [ayushmanSales]);
 
   return (
-    <div className="pos-container" style={{ minHeight: '85vh' }}>
+    <div className="pos-container bg-brand-surface" style={{ minHeight: '85vh' }}>
       {/* Top Header Bar */}
-      <div className="pos-top-bar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="pos-top-bar bg-white border-b border-slate-200" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div className="pos-top-left" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{ background: '#ecfdf5', color: '#007a70', padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center' }}>
+          <div style={{ background: '#ECFDF5', color: '#059669', padding: '8px', borderRadius: '8px', display: 'flex', alignItems: 'center' }}>
             <ShieldPlus size={22} />
           </div>
           <div>
-            <h1 className="pos-top-title" style={{ fontSize: '18px', fontWeight: 800, color: '#133e36', margin: 0 }}>
+            <h1 className="pos-top-title" style={{ fontSize: '18px', fontWeight: 800, color: '#0F172A', margin: 0 }}>
               Ayushman Bharat Sales & Claims Hub
             </h1>
-            <p style={{ margin: 0, fontSize: '11px', color: '#68827c' }}>
+            <p style={{ margin: 0, fontSize: '11px', color: '#64748B' }}>
               Government health scheme beneficiary bills, PM-JAY card tracking, and claim reconciliations.
             </p>
           </div>
@@ -83,7 +83,7 @@ export default function AyushmanSales() {
               display: 'flex',
               alignItems: 'center',
               gap: '5px',
-              background: '#007a70',
+              background: '#059669',
               color: '#fff',
               border: 0,
               fontWeight: 700,
@@ -91,7 +91,7 @@ export default function AyushmanSales() {
               padding: '7px 14px',
               borderRadius: '6px',
               cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(0, 122, 112, 0.25)'
+              boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)'
             }}
           >
             <Plus size={14} /> New Ayushman Bill

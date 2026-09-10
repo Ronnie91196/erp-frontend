@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   Pill, TrendingUp, AlertTriangle, AlertCircle,
   Package, DollarSign, Clock, Calendar, ChevronRight,
   TrendingDown, Percent, ArrowUpRight, ArrowDownRight,
-  CheckCircle2, RefreshCw, ShoppingCart, Truck, ShieldAlert
+  CheckCircle2, RefreshCw, ShoppingCart, Truck, ShieldAlert,
+  ClipboardList, Send, Check, Plus
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis,
@@ -36,6 +37,11 @@ export default function Dashboard() {
   const user = JSON.parse(localStorage.getItem('pharma_user') || '{}');
   const userName = user.name || user.username || 'Pharmacist';
 
+  const queryClient = useQueryClient();
+  const [quickOrderInput, setQuickOrderInput] = useState('');
+  const [quickOrderQty, setQuickOrderQty] = useState('10');
+  const [addedItemIds, setAddedItemIds] = useState([]);
+
   const { data: dashboardData, isLoading, isFetching, refetch } = useQuery({
     queryKey: ['dashboard-summary', timeRange],
     queryFn: async () => {
@@ -43,6 +49,96 @@ export default function Dashboard() {
     },
     refetchInterval: 30000,
   });
+
+  // Live Order Notes for Dashboard USP section
+  const { data: orderNotes = [], refetch: refetchOrderNotes } = useQuery({
+    queryKey: ['order-notes-dashboard'],
+    queryFn: async () => {
+      return unwrap(await api.get('/order-notes'));
+    },
+  });
+
+  const addOrderNoteMutation = useMutation({
+    mutationFn: async (payload) => unwrap(await api.post('/order-notes', payload)),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['order-notes-dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['order-notes'] });
+    },
+  });
+
+  const toggleOrderNoteMutation = useMutation({
+    mutationFn: async ({ id, status }) => unwrap(await api.put(`/order-notes/${id}`, { status })),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['order-notes-dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['order-notes'] });
+    },
+  });
+
+  const handleAddLowStockToOrder = (item, idx) => {
+    const defaultQty = Math.max(10, (item.minStock || 10) - (item.quantity || 0));
+    addOrderNoteMutation.mutate({
+      medicineName: item.drugName,
+      quantity: defaultQty,
+      unit: item.unit || 'Units',
+      distributor: '',
+      note: `Stock Alert: current ${item.quantity} ${item.unit || 'units'} vs min ${item.minStock}`,
+      status: 'PENDING',
+    });
+    setAddedItemIds((prev) => [...prev, idx]);
+  };
+
+  const handleAddQuickCustomOrder = (e) => {
+    e.preventDefault();
+    if (!quickOrderInput.trim()) return;
+    addOrderNoteMutation.mutate({
+      medicineName: quickOrderInput.trim(),
+      quantity: Number(quickOrderQty) || 10,
+      unit: 'Strips',
+      distributor: '',
+      note: 'Counter shortage note',
+      status: 'PENDING',
+    });
+    setQuickOrderInput('');
+    setQuickOrderQty('10');
+  };
+
+  const handleShareDashboardOrdersWhatsApp = () => {
+    const pending = orderNotes.filter((n) => n.status === 'PENDING');
+    if (pending.length === 0) {
+      alert('No pending requirements to share on WhatsApp.');
+      return;
+    }
+
+    const todayStr = new Date().toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+    });
+
+    let msg = `📦 *SSDN PHARMAORA BY OTODDY*\n`;
+    msg += `📋 *DAILY MEDICINE REQUIREMENT / SHORTAGE ORDER*\n`;
+    msg += `📅 Date: ${todayStr}\n`;
+    msg += `------------------------------------\n`;
+
+    pending.forEach((item, idx) => {
+      msg += `${idx + 1}. *${item.medicineName}* - ${item.quantity} ${item.unit || 'Units'}`;
+      if (item.distributor) {
+        msg += ` _(${item.distributor})_`;
+      }
+      if (item.note) {
+        msg += ` [Note: ${item.note}]`;
+      }
+      msg += `\n`;
+    });
+
+    msg += `------------------------------------\n`;
+    msg += `Total Items: ${pending.length}\n`;
+    msg += `⚡ *Please confirm availability and dispatch schedule.*\n`;
+    msg += `_Generated via SSDN PHARMAORA_`;
+
+    const encoded = encodeURIComponent(msg);
+    window.open(`https://wa.me/?text=${encoded}`, '_blank');
+  };
 
   const kpi = dashboardData?.kpi || {
     totalDrugsCount: 0,
@@ -302,7 +398,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '10px' }}>
               <div>
                 <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <AlertCircle size={16} color="#007a70" /> Action Required (Mediflux Zone)
+                  <AlertCircle size={16} color="#007a70" /> Action Required
                 </div>
                 <div style={{ fontSize: '11px', color: '#64748b' }}>Urgent shelf management and stock reorders</div>
               </div>
@@ -347,7 +443,7 @@ export default function Dashboard() {
             </div>
 
             {/* Alert List Items */}
-            <div style={{ maxHeight: '240px', overflowY: 'auto' }}>
+            <div style={{ overflowX: 'auto' }}>
               {alertTab === 'expired' && (
                 <table className="pos-table" style={{ width: '100%', fontSize: '11.5px' }}>
                   <thead>
@@ -355,28 +451,37 @@ export default function Dashboard() {
                       <th>Medicine Name</th>
                       <th>Batch</th>
                       <th>Expiry</th>
-                      <th className="right">MRP</th>
+                      <th>MRP</th>
                       <th className="center">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {[...alerts.expiredItems, ...alerts.expiringIn30DaysItems].length === 0 ? (
-                      <tr><td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: '#94a3b8' }}>✅ No expiring or expired drugs found on shelf.</td></tr>
+                    {alerts.expiredItems.length === 0 && alerts.expiringIn30DaysItems.length === 0 ? (
+                      <tr><td colSpan={5} style={{ textAlign: 'center', padding: '24px', color: '#94a3b8' }}>✅ No expired or near-expiry batches detected.</td></tr>
                     ) : (
                       [...alerts.expiredItems, ...alerts.expiringIn30DaysItems].slice(0, 6).map((item, idx) => {
-                        const isExpired = new Date(item.expiryDate) < new Date();
+                        const isExp = new Date(item.expiryDate) < new Date();
                         return (
-                          <tr key={idx} style={{ background: isExpired ? '#fff1f2' : '#fffbeb' }}>
+                          <tr key={idx} style={{ background: isExp ? '#fff1f2' : '#fffbeb' }}>
                             <td>
-                              <b style={{ color: isExpired ? '#e11d48' : '#b45309' }}>{item.drugName}</b>
+                              <b style={{ color: isExp ? '#e11d48' : '#b45309' }}>{item.drugName}</b>
                               <div style={{ fontSize: '10px', color: '#64748b' }}>{item.generic}</div>
                             </td>
-                            <td style={{ fontFamily: 'monospace', fontWeight: 700 }}>{item.batchNumber}</td>
-                            <td style={{ fontSize: '11px', fontWeight: 700, color: isExpired ? '#e11d48' : '#b45309' }}>
-                              {item.expiryDate ? new Date(item.expiryDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' }) : '—'}
-                              {isExpired && <span style={{ marginLeft: '4px', fontSize: '9px', background: '#fee2e2', padding: '1px 4px', borderRadius: '3px' }}>EXPIRED</span>}
+                            <td style={{ fontFamily: 'monospace' }}>{item.batchNumber}</td>
+                            <td>
+                              <span style={{
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                fontSize: '10px',
+                                fontWeight: 800,
+                                background: isExp ? '#fee2e2' : '#fef3c7',
+                                color: isExp ? '#ef4444' : '#d97706'
+                              }}>
+                                {new Date(item.expiryDate).toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })}
+                                {isExp ? ' EXPIRED' : ' EXPIRING'}
+                              </span>
                             </td>
-                            <td className="right">{money(item.mrp)}</td>
+                            <td style={{ fontWeight: 600 }}>{money(item.mrp)}</td>
                             <td className="center">
                               <button
                                 type="button"
@@ -425,10 +530,31 @@ export default function Dashboard() {
                           <td className="center">
                             <button
                               type="button"
-                              onClick={() => navigate('/purchases/add')}
-                              style={{ padding: '2px 6px', borderRadius: '4px', border: '1px solid #cbd5e1', background: '#fff', fontSize: '10px', fontWeight: 700, color: '#007a70', cursor: 'pointer' }}
+                              onClick={() => handleAddLowStockToOrder(item, idx)}
+                              disabled={addedItemIds.includes(idx)}
+                              style={{
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                border: addedItemIds.includes(idx) ? '1px solid #a7f3d0' : '1px solid #007a70',
+                                background: addedItemIds.includes(idx) ? '#ecfdf5' : '#f0fdf9',
+                                fontSize: '10.5px',
+                                fontWeight: 800,
+                                color: addedItemIds.includes(idx) ? '#059669' : '#007a70',
+                                cursor: addedItemIds.includes(idx) ? 'default' : 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '3px'
+                              }}
                             >
-                              Procure
+                              {addedItemIds.includes(idx) ? (
+                                <>
+                                  <Check size={11} strokeWidth={3} /> Noted
+                                </>
+                              ) : (
+                                <>
+                                  <Plus size={11} strokeWidth={3} /> + Order Note
+                                </>
+                              )}
                             </button>
                           </td>
                         </tr>
@@ -446,7 +572,7 @@ export default function Dashboard() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '10px' }}>
                 <div>
                   <div style={{ fontSize: '14px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Percent size={16} color="#007a70" /> Collection on Sales (eVitalRx Density)
+                    <Percent size={16} color="#007a70" /> % Collection on Sales
                   </div>
                   <div style={{ fontSize: '11px', color: '#64748b' }}>Cash drawer efficiency vs customer credit ratio</div>
                 </div>
@@ -505,6 +631,254 @@ export default function Dashboard() {
             </div>
           </div>
 
+        </div>
+
+        {/* SSDN PHARMAORA UNIQUE USP: ORDER NOTES & DAILY REQUIREMENTS WITH WHATSAPP DISPATCH */}
+        <div style={{
+          background: 'linear-gradient(180deg, #ffffff 0%, #fbfdfc 100%)',
+          borderRadius: '12px',
+          border: '1.5px solid #ccebe6',
+          boxShadow: '0 4px 16px rgba(0, 122, 112, 0.05)',
+          padding: '20px 24px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '16px'
+        }}>
+          {/* Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', borderBottom: '1px solid #f0fdf9', paddingBottom: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div style={{
+                width: '38px',
+                height: '38px',
+                borderRadius: '10px',
+                background: 'linear-gradient(135deg, #007a70 0%, #005a52 100%)',
+                color: '#fff',
+                display: 'grid',
+                placeItems: 'center',
+                boxShadow: '0 3px 8px rgba(0,122,112,0.25)'
+              }}>
+                <ClipboardList size={20} />
+              </div>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.3px' }}>
+                    Daily Requirements & Order Notes
+                  </h3>
+                  <span style={{
+                    fontSize: '10px',
+                    fontWeight: 900,
+                    letterSpacing: '0.5px',
+                    textTransform: 'uppercase',
+                    background: '#edf7f5',
+                    color: '#007a70',
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    border: '1px solid #99f6e4'
+                  }}>
+                    PharmaOra USP
+                  </span>
+                </div>
+                <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '2px' }}>
+                  Note down daily counter requirements & medicine shortages. Share direct purchase orders via WhatsApp to distributors!
+                </div>
+              </div>
+            </div>
+
+            {/* Header Controls */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <button
+                type="button"
+                onClick={handleShareDashboardOrdersWhatsApp}
+                disabled={orderNotes.filter((n) => n.status === 'PENDING').length === 0}
+                style={{
+                  background: orderNotes.filter((n) => n.status === 'PENDING').length > 0 ? '#128c7e' : '#cbd5e1',
+                  color: '#fff',
+                  border: 0,
+                  borderRadius: '8px',
+                  padding: '7px 15px',
+                  fontSize: '12px',
+                  fontWeight: 800,
+                  cursor: orderNotes.filter((n) => n.status === 'PENDING').length > 0 ? 'pointer' : 'not-allowed',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: orderNotes.filter((n) => n.status === 'PENDING').length > 0 ? '0 2px 8px rgba(18,140,126,0.3)' : 'none',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <Send size={14} /> Share Order on WhatsApp ({orderNotes.filter((n) => n.status === 'PENDING').length})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigate('/order-notes')}
+                style={{
+                  background: '#fff',
+                  border: '1px solid #cbd5e1',
+                  color: '#007a70',
+                  borderRadius: '8px',
+                  padding: '7px 13px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px'
+                }}
+              >
+                View Full Manager <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Add Bar & List */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '16px' }}>
+            
+            {/* Quick Add Box */}
+            <div style={{ background: '#f8fafc', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '16px' }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: '#334155', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Plus size={14} color="#007a70" /> Quick Add Requirement
+              </div>
+              <form onSubmit={handleAddQuickCustomOrder} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <input
+                  type="text"
+                  placeholder="Type medicine name (e.g. Telma 40mg, Augmentin 625)"
+                  value={quickOrderInput}
+                  onChange={(e) => setQuickOrderInput(e.target.value)}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    fontSize: '12px',
+                    outline: 'none',
+                    background: '#fff'
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="number"
+                    min="1"
+                    placeholder="Qty"
+                    value={quickOrderQty}
+                    onChange={(e) => setQuickOrderQty(e.target.value)}
+                    style={{
+                      width: '80px',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid #cbd5e1',
+                      fontSize: '12px',
+                      outline: 'none',
+                      background: '#fff'
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!quickOrderInput.trim() || addOrderNoteMutation.isPending}
+                    style={{
+                      flex: 1,
+                      background: '#007a70',
+                      color: '#fff',
+                      border: 0,
+                      borderRadius: '6px',
+                      padding: '8px 14px',
+                      fontSize: '12px',
+                      fontWeight: 800,
+                      cursor: quickOrderInput.trim() ? 'pointer' : 'not-allowed',
+                      opacity: quickOrderInput.trim() ? 1 : 0.6
+                    }}
+                  >
+                    {addOrderNoteMutation.isPending ? 'Adding...' : '+ Add to Today’s Order'}
+                  </button>
+                </div>
+              </form>
+              <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '8px' }}>
+                💡 Tip: Click <b>"+ Order Note"</b> in the Low Stock table above to 1-click import low items.
+              </div>
+            </div>
+
+            {/* Active Items Mini Tracker */}
+            <div style={{ background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '14px 16px', maxHeight: '200px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '11px', fontWeight: 800, color: '#64748b', textTransform: 'uppercase' }}>
+                  Today's Active List ({orderNotes.length} Items)
+                </span>
+                <span style={{ fontSize: '10.5px', color: '#059669', fontWeight: 700 }}>
+                  {orderNotes.filter(n => n.status === 'PENDING').length} Pending
+                </span>
+              </div>
+
+              {orderNotes.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 10px', color: '#94a3b8', fontSize: '11.5px' }}>
+                  No requirement items logged yet today. Add medicines above or from the Low Stock alerts.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {orderNotes.slice(0, 10).map((noteItem) => {
+                    const isOrdered = noteItem.status === 'ORDERED';
+                    return (
+                      <div
+                        key={noteItem.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          background: isOrdered ? '#f8fafc' : '#f0fdf9',
+                          border: isOrdered ? '1px solid #e2e8f0' : '1px solid #ccfbf1'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <button
+                            type="button"
+                            onClick={() => toggleOrderNoteMutation.mutate({ id: noteItem.id, status: isOrdered ? 'PENDING' : 'ORDERED' })}
+                            style={{
+                              width: '18px',
+                              height: '18px',
+                              borderRadius: '50%',
+                              border: isOrdered ? '1px solid #10b981' : '1.5px solid #cbd5e1',
+                              background: isOrdered ? '#10b981' : '#fff',
+                              color: '#fff',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              padding: 0
+                            }}
+                            title={isOrdered ? 'Mark Pending' : 'Mark Completed'}
+                          >
+                            {isOrdered && <Check size={10} strokeWidth={3} />}
+                          </button>
+                          <div>
+                            <span style={{ fontSize: '12px', fontWeight: 700, color: isOrdered ? '#94a3b8' : '#0f172a', textDecoration: isOrdered ? 'line-through' : 'none' }}>
+                              {noteItem.medicineName}
+                            </span>
+                            {noteItem.note && (
+                              <span style={{ fontSize: '10px', color: '#64748b', marginLeft: '6px' }}>
+                                ({noteItem.note})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <span style={{
+                          fontSize: '11px',
+                          fontWeight: 800,
+                          padding: '2px 7px',
+                          borderRadius: '4px',
+                          background: isOrdered ? '#f1f5f9' : '#fef3c7',
+                          color: isOrdered ? '#64748b' : '#d97706'
+                        }}>
+                          {noteItem.quantity} {noteItem.unit || 'Units'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+          </div>
         </div>
 
         {/* PHASE 3: ANALYTICS & REVENUE/PROFIT LINE GRAPH */}
@@ -592,17 +966,17 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* PHASE 3 (BOTTOM): DRUG MOVEMENT (FAST/SLOW MOVING & MARGINS) */}
+        {/* PHASE 3 (BOTTOM): DRUG MOVEMENT (FAST & SLOW MOVING) */}
         <div style={{ background: '#fff', borderRadius: '10px', border: '1px solid #e2e8f0', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #f1f5f9', paddingBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
             <div>
               <div style={{ fontSize: '15px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Package size={17} color="#007a70" /> Drug Movement & Velocity Rankings
               </div>
-              <div style={{ fontSize: '11.5px', color: '#64748b' }}>Top moving pharmaceuticals and high-yield product leaders</div>
+              <div style={{ fontSize: '11.5px', color: '#64748b' }}>Top moving pharmaceuticals and velocity distribution</div>
             </div>
 
-            {/* Movement Tabs */}
+            {/* Movement Tabs: Fast & Slow Moving */}
             <div style={{ display: 'flex', background: '#f1f5f9', padding: '3px', borderRadius: '8px', gap: '4px' }}>
               <button
                 type="button"
@@ -636,33 +1010,17 @@ export default function Dashboard() {
               >
                 🐢 Slow Moving
               </button>
-              <button
-                type="button"
-                onClick={() => setMovementTab('margin')}
-                style={{
-                  padding: '5px 12px',
-                  borderRadius: '6px',
-                  border: 0,
-                  fontSize: '11.5px',
-                  fontWeight: movementTab === 'margin' ? 800 : 600,
-                  cursor: 'pointer',
-                  background: movementTab === 'margin' ? '#007a70' : 'transparent',
-                  color: movementTab === 'margin' ? '#fff' : '#64748b',
-                }}
-              >
-                💎 Highest Margin %
-              </button>
             </div>
           </div>
 
           {/* Compact Top-5 List */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '12px' }}>
-            {(movementTab === 'fast' ? drugMovement.fastMoving : movementTab === 'slow' ? drugMovement.slowMoving : drugMovement.highMargin).length === 0 ? (
+            {(movementTab === 'fast' ? drugMovement.fastMoving : drugMovement.slowMoving).length === 0 ? (
               <div style={{ gridColumn: '1 / -1', textAlign: 'center', padding: '32px', color: '#94a3b8' }}>
                 No movement sales recorded yet for this period.
               </div>
             ) : (
-              (movementTab === 'fast' ? drugMovement.fastMoving : movementTab === 'slow' ? drugMovement.slowMoving : drugMovement.highMargin).map((item, idx) => (
+              (movementTab === 'fast' ? drugMovement.fastMoving : drugMovement.slowMoving).map((item, idx) => (
                 <div
                   key={idx}
                   style={{
@@ -688,8 +1046,8 @@ export default function Dashboard() {
                   </div>
 
                   <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: '13px', fontWeight: 800, color: movementTab === 'margin' ? '#059669' : '#007a70' }}>
-                      {movementTab === 'margin' ? `${item.profitMarginPercent}% Margin` : `${item.unitsSold} Units`}
+                    <div style={{ fontSize: '13px', fontWeight: 800, color: '#007a70' }}>
+                      {`${item.unitsSold} Units`}
                     </div>
                     <div style={{ fontSize: '10.5px', color: '#64748b' }}>
                       {money(item.totalRevenue)} Billed

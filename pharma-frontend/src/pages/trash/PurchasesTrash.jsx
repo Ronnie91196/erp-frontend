@@ -14,9 +14,11 @@ export default function PurchasesTrash() {
   const getColumns = () => [
     'Invoice #',
     'Supplier Name',
+    'Bill Date',
     'Items',
     'Total Amount',
-    'Deleted On',
+    'Deleted At',
+    'Deleted By',
     'Actions',
   ];
 
@@ -32,6 +34,9 @@ export default function PurchasesTrash() {
         </span>
       )}
     </div>,
+    <div style={{ fontSize: '11.5px', color: '#555', whiteSpace: 'nowrap' }}>
+      {item.invoiceDate ? new Date(item.invoiceDate).toLocaleDateString('en-IN') : '—'}
+    </div>,
     <div style={{ fontSize: '11px', color: '#007a70', fontWeight: 700 }}>
       {item.items?.length || 0} item(s)
     </div>,
@@ -45,6 +50,9 @@ export default function PurchasesTrash() {
           {new Date(item.deletedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
         </div>
       )}
+    </div>,
+    <div style={{ fontSize: '11px', color: '#133e36', fontWeight: 600 }}>
+      {item.deletedBy || 'Admin'}
     </div>,
   ];
 

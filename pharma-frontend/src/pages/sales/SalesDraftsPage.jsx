@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search } from 'lucide-react';
+import { Search, Edit3 } from 'lucide-react';
 import api, { unwrap } from '../../lib/api';
 
 function money(value) {
@@ -359,20 +359,11 @@ export default function SalesDraftsPage() {
                     <td className="center" style={{ whiteSpace: 'nowrap' }}>
                       <button
                         type="button"
-                        onClick={() => navigate(`/sales/add?draft=${draft.id}`)}
-                        style={{
-                          border: '1px solid #b7d6ce',
-                          background: '#edf7f5',
-                          color: '#007a70',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          borderRadius: '4px',
-                          padding: '4px 10px',
-                          cursor: 'pointer',
-                          marginRight: '6px'
-                        }}
+                        onClick={() => navigate(`/sales/add?draftId=${draft.id}`)}
+                        className="text-brand-primary bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md text-xs font-semibold inline-flex items-center gap-1.5 transition-colors mr-1.5"
+                        title="Edit / Resume Draft"
                       >
-                        Edit / Resume
+                        <Edit3 size={12} /> Edit / Resume
                       </button>
                       <button
                         type="button"

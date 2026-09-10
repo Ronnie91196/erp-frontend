@@ -48,17 +48,31 @@ export default function TrashDataTable({ entity, entityLabel, icon: Icon = Trash
     );
   };
 
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 4500);
+  };
+
+  // Invalidate all related caches
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ['trash', entity] });
+    queryClient.invalidateQueries({ queryKey: [entity] });
+    queryClient.invalidateQueries({ queryKey: ['products'] });
+    queryClient.invalidateQueries({ queryKey: ['suppliers'] });
+    queryClient.invalidateQueries({ queryKey: ['customers'] });
+    queryClient.invalidateQueries({ queryKey: ['purchases-list'] });
+    queryClient.invalidateQueries({ queryKey: ['sales'] });
+  };
+
   // Restore single mutation
   const restoreMutation = useMutation({
     mutationFn: async (id) => unwrap(await api.post(`/trash/${entity}/${id}/restore`)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['trash', entity] });
-      queryClient.invalidateQueries({ queryKey: [entity] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      queryClient.invalidateQueries({ queryKey: ['suppliers'] });
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      queryClient.invalidateQueries({ queryKey: ['purchases-list'] });
-      queryClient.invalidateQueries({ queryKey: ['sales'] });
+      invalidateAll();
     },
   });
 
@@ -66,74 +80,125 @@ export default function TrashDataTable({ entity, entityLabel, icon: Icon = Trash
   const purgeMutation = useMutation({
     mutationFn: async (id) => unwrap(await api.delete(`/trash/${entity}/${id}/purge`)),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['trash', entity] });
+      invalidateAll();
     },
   });
 
   // Restore all mutation
   const restoreAllMutation = useMutation({
     mutationFn: async () => unwrap(await api.post(`/trash/${entity}/restore-all`)),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setSelectedIds([]);
-      queryClient.invalidateQueries({ queryKey: ['trash', entity] });
-      queryClient.invalidateQueries({ queryKey: [entity] });
+      invalidateAll();
+      showToast(data?.message || `All ${entityLabel} restored successfully.`, 'success');
+    },
+    onError: (err) => {
+      showToast(apiError(err) || 'Failed to restore items', 'error');
     },
   });
 
   // Purge all mutation
   const purgeAllMutation = useMutation({
     mutationFn: async () => unwrap(await api.delete(`/trash/${entity}/purge-all`)),
-    onSuccess: () => {
+    onSuccess: (data) => {
       setSelectedIds([]);
-      queryClient.invalidateQueries({ queryKey: ['trash', entity] });
+      invalidateAll();
+      showToast(data?.message || `All ${entityLabel} permanently purged.`, 'success');
+    },
+    onError: (err) => {
+      showToast(apiError(err) || 'Failed to purge items', 'error');
     },
   });
 
   const handleRestoreSingle = async (id, name) => {
     if (!window.confirm(`Restore "${name || 'this item'}" back to active records?`)) return;
     try {
+      showToast(`Restoring ${name || 'item'}...`, 'info');
       await restoreMutation.mutateAsync(id);
       setSelectedIds((prev) => prev.filter((i) => i !== id));
+      showToast(`"${name || 'Item'}" restored successfully!`, 'success');
     } catch (err) {
-      window.alert(apiError(err) || 'Failed to restore item');
+      showToast(apiError(err) || 'Failed to restore item', 'error');
     }
   };
 
   const handlePurgeSingle = async (id, name) => {
     if (!window.confirm(`⚠️ PERMANENT DELETE WARNING:\n\nAre you sure you want to permanently delete "${name || 'this item'}"?\nThis CANNOT be undone!`)) return;
     try {
+      showToast(`Permanently deleting ${name || 'item'}...`, 'info');
       await purgeMutation.mutateAsync(id);
       setSelectedIds((prev) => prev.filter((i) => i !== id));
+      showToast(`"${name || 'Item'}" permanently purged from database.`, 'success');
     } catch (err) {
-      window.alert(apiError(err) || 'Failed to permanently delete item');
+      showToast(apiError(err) || 'Failed to permanently delete item', 'error');
     }
   };
 
   const handleRestoreSelected = async () => {
     if (!selectedIds.length) return;
     if (!window.confirm(`Restore ${selectedIds.length} selected ${entityLabel}(s)?`)) return;
+    showToast(`Restoring ${selectedIds.length} item(s)...`, 'info');
     try {
       for (const id of selectedIds) {
         await restoreMutation.mutateAsync(id);
       }
       setSelectedIds([]);
-      await trashQuery.refetch();
+      invalidateAll();
+      showToast(`Selected ${entityLabel}(s) restored successfully!`, 'success');
     } catch (err) {
-      window.alert(apiError(err) || 'Failed to restore some items');
+      showToast(apiError(err) || 'Failed to restore some items', 'error');
     }
   };
 
   const handlePurgeSelected = async () => {
     if (!selectedIds.length) return;
     if (!window.confirm(`⚠️ PERMANENT DELETE WARNING:\n\nPermanently delete ${selectedIds.length} selected ${entityLabel}(s)? This CANNOT be undone!`)) return;
-    try {
-      for (const id of selectedIds) {
+    showToast(`Permanently deleting ${selectedIds.length} item(s)...`, 'info');
+    let failCount = 0;
+    let lastError = '';
+    const successIds = [];
+
+    for (const id of selectedIds) {
+      try {
         await purgeMutation.mutateAsync(id);
+        successIds.push(id);
+      } catch (err) {
+        failCount++;
+        lastError = apiError(err) || 'Constraint violation';
       }
-      setSelectedIds([]);
-      await trashQuery.refetch();
+    }
+
+    setSelectedIds((prev) => prev.filter((id) => !successIds.includes(id)));
+    invalidateAll();
+
+    if (failCount === 0) {
+      showToast(`All ${successIds.length} selected ${entityLabel}(s) permanently deleted.`, 'success');
+    } else if (successIds.length > 0) {
+      showToast(`${successIds.length} purged, but ${failCount} could not be deleted: ${lastError}`, 'error');
+    } else {
+      showToast(lastError || 'Failed to permanently delete selected items.', 'error');
+    }
+  };
+
+  const handlePurgeAll = async () => {
+    if (!window.confirm(`⚠️ DANGER: Permanently delete ALL ${items.length} ${entityLabel}(s) in trash? This cannot be undone!`)) return;
+    showToast(`Purging all items from ${entityLabel} recycle bin...`, 'info');
+    try {
+      const res = await purgeAllMutation.mutateAsync();
+      showToast(res?.message || 'Purged successfully', 'success');
     } catch (err) {
-      window.alert(apiError(err) || 'Failed to permanently delete some items');
+      showToast(apiError(err) || 'Failed to purge items', 'error');
+    }
+  };
+
+  const handleRestoreAll = async () => {
+    if (!window.confirm(`Restore ALL ${items.length} ${entityLabel}(s)?`)) return;
+    showToast(`Restoring all items...`, 'info');
+    try {
+      const res = await restoreAllMutation.mutateAsync();
+      showToast(res?.message || 'Restored successfully', 'success');
+    } catch (err) {
+      showToast(apiError(err) || 'Failed to restore items', 'error');
     }
   };
 
@@ -205,11 +270,7 @@ export default function TrashDataTable({ entity, entityLabel, icon: Icon = Trash
 
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm(`Restore ALL ${items.length} ${entityLabel}(s)?`)) {
-                    restoreAllMutation.mutate();
-                  }
-                }}
+                onClick={handleRestoreAll}
                 disabled={restoreAllMutation.isPending}
                 style={{
                   display: 'flex',
@@ -225,16 +286,12 @@ export default function TrashDataTable({ entity, entityLabel, icon: Icon = Trash
                   cursor: 'pointer',
                 }}
               >
-                <RotateCcw size={13} /> Restore All ({items.length})
+                <RotateCcw size={13} /> {restoreAllMutation.isPending ? 'Restoring...' : `Restore All (${items.length})`}
               </button>
 
               <button
                 type="button"
-                onClick={() => {
-                  if (window.confirm(`⚠️ DANGER: Permanently delete ALL ${items.length} ${entityLabel}(s) in trash? This cannot be undone!`)) {
-                    purgeAllMutation.mutate();
-                  }
-                }}
+                onClick={handlePurgeAll}
                 disabled={purgeAllMutation.isPending}
                 style={{
                   display: 'flex',
@@ -250,12 +307,49 @@ export default function TrashDataTable({ entity, entityLabel, icon: Icon = Trash
                   cursor: 'pointer',
                 }}
               >
-                <Trash2 size={13} /> Purge All
+                <Trash2 size={13} /> {purgeAllMutation.isPending ? 'Purging...' : 'Purge All'}
               </button>
             </>
           )}
         </div>
       </div>
+
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            padding: '12px 18px',
+            borderRadius: '8px',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.18)',
+            fontSize: '13px',
+            fontWeight: 600,
+            maxWidth: '460px',
+            background: toast.type === 'error' ? '#fef2f2' : (toast.type === 'success' ? '#ecfdf5' : '#f0f9ff'),
+            color: toast.type === 'error' ? '#b91c1c' : (toast.type === 'success' ? '#047857' : '#0369a1'),
+            border: `1px solid ${toast.type === 'error' ? '#fecaca' : (toast.type === 'success' ? '#a7f3d0' : '#bae6fd')}`,
+            animation: 'fadeIn 0.2s ease-out',
+          }}
+        >
+          {toast.type === 'error' && <AlertTriangle size={17} />}
+          {toast.type === 'success' && <Check size={17} />}
+          {toast.type === 'info' && <RotateCcw size={17} className="animate-spin" />}
+          <div style={{ flex: 1 }}>{toast.message}</div>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: 'inherit', padding: '2px' }}
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
 
       <div className="pos-main-body" style={{ padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {/* KPI Strip */}

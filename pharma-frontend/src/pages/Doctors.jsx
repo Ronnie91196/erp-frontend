@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api, { unwrap, apiError } from '../lib/api';
 import { Card, Table, Button, Input, Badge, money, date } from '../components/ui';
+import Pagination from '../components/Pagination';
 import {
   Stethoscope,
   Search,
@@ -451,21 +452,47 @@ function DoctorDetailsModal({ doctorId, onClose, onEdit }) {
 }
 
 export default function Doctors() {
+  const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit, setLimit] = useState(25);
   const [modalDoctor, setModalDoctor] = useState(null); // { id: ... } or { new: true }
   const [detailDoctorId, setDetailDoctorId] = useState(null);
 
   const queryClient = useQueryClient();
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   const doctorsQuery = useQuery({
-    queryKey: ['doctors-list', search],
+    queryKey: ['doctors-list', search, page, limit],
     queryFn: async () => {
-      const res = unwrap(await api.get(`/doctors${search ? `?search=${encodeURIComponent(search)}` : ''}`));
-      return Array.isArray(res) ? res : [];
+      const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(limit));
+      if (search) params.append('search', search);
+      const res = await api.get(`/doctors?${params.toString()}`);
+      return res.data;
     },
   });
 
-  const doctors = doctorsQuery.data || [];
+  const rawDoctors = Array.isArray(doctorsQuery.data?.data)
+    ? doctorsQuery.data.data
+    : (Array.isArray(doctorsQuery.data) ? doctorsQuery.data : []);
+
+  const pagination = doctorsQuery.data?.pagination || {
+    total: rawDoctors.length,
+    page,
+    limit,
+    totalPages: Math.ceil(rawDoctors.length / limit) || 1,
+  };
+
+  const doctors = rawDoctors;
 
   const createMutation = useMutation({
     mutationFn: async (data) => unwrap(await api.post('/doctors', data)),
@@ -560,8 +587,8 @@ export default function Doctors() {
             <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#7a8e89' }} />
             <input
               type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search doctors by name, license no, hospital, specialization or phone..."
               style={{
                 width: '100%',
@@ -573,10 +600,10 @@ export default function Doctors() {
               }}
             />
           </div>
-          {search && (
+          {searchInput && (
             <button
               type="button"
-              onClick={() => setSearch('')}
+              onClick={() => { setSearchInput(''); setSearch(''); setPage(1); }}
               style={{
                 border: '1px solid #cadcd7',
                 background: '#fff',
@@ -733,6 +760,13 @@ export default function Doctors() {
                 ))}
               </tbody>
             </table>
+            <Pagination
+              pagination={pagination}
+              onPageChange={(p) => setPage(p)}
+              onLimitChange={(l) => { setLimit(l); setPage(1); }}
+              pageSizeOptions={[10, 25, 50, 100]}
+              itemLabel="doctors"
+            />
           </div>
         )}
       </div>

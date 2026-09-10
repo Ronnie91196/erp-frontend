@@ -1,8 +1,9 @@
 import React from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Archive, ArrowDown, ArrowUp, Building2, CalendarDays, Check, ChevronDown, Edit3, Filter, Info, Link2, MoreVertical, Plus, RotateCcw, Search, Tag, X } from 'lucide-react';
+import { AlertTriangle, Archive, ArrowDown, ArrowUp, Building2, CalendarDays, Check, ChevronDown, Edit3, Filter, Info, Link2, MoreVertical, Plus, RotateCcw, Search, Tag, Trash2, X } from 'lucide-react';
 import api, { apiError, unwrap } from '../lib/api';
 import * as XLSX from 'xlsx';
+import Pagination from '../components/Pagination';
 
 const dosageForms = ['Bar', 'Capsule', 'Cream', 'Drops', 'Gel', 'Inhaler', 'Inhalation', 'Injection', 'Liquid', 'Tablet'];
 
@@ -205,7 +206,7 @@ function UpdateDrugModal({ product, onClose, onSaved, saving, error }) {
   const [form, setForm] = React.useState({
     name: product.name || '', stock: batch.stock, batch: batch.batch === '-' ? '' : batch.batch,
     hsn: product.hsnCode || '', costPrice: batch.costPrice || '', sellingPrice: product.batches?.[0]?.sellingPrice || '', mrp: batch.price || '', expiry: batch.expiry === '-' ? '' : batch.expiry,
-    rack: product.rack || '', unitsPack: product.packaging?.[0]?.conversionToBase || '', dosageForm: product.dosageForm || '', scheduling: product.scheduling || '',
+    rack: (product.actualRack ?? product.rack) || '', unitsPack: product.packaging?.[0]?.conversionToBase || '', dosageForm: product.dosageForm || '', scheduling: product.scheduling || '',
     barcode: product.barcode || '', reorderLevel: product.reorderLevel || 0, cgst: 0, sgst: 0, igst: product.gstPercent || 0,
   });
   const update = (field, value) => setForm((current) => ({ ...current, [field]: value }));
@@ -228,7 +229,7 @@ function UpdateDrugModal({ product, onClose, onSaved, saving, error }) {
             <label className="drug-field"><span>MRP</span><input type="number" step="0.01" value={form.mrp} onChange={(e) => update('mrp', e.target.value)} /></label>
             <label className="drug-field"><span>Expiry (MM/YY)</span><input placeholder="08/26" value={form.expiry} onChange={(e) => update('expiry', e.target.value)} /></label>
             <label className="drug-field"><span>Rack</span><input value={form.rack} onChange={(e) => update('rack', e.target.value)} /></label>
-            <label className="drug-field"><span>Units/Pack</span><input type="number" value={form.unitsPack} onChange={(e) => update('unitsPack', e.target.value)} /></label>
+              <label className="drug-field"><span>Units/Pack</span><input type="number" value={form.unitsPack} onChange={(e) => update('unitsPack', e.target.value)} /></label>
             <label className="drug-field"><span>Dosage Form</span><select value={form.dosageForm} onChange={(e) => update('dosageForm', e.target.value)}><option value="">Select form</option>{dosageForms.map((formName) => <option key={formName}>{formName}</option>)}</select></label>
             <label className="drug-field"><span>Scheduling</span><select value={form.scheduling} onChange={(e) => update('scheduling', e.target.value)}><option value="">Not scheduled</option><option>NRx (Narcotic)</option><option>H1</option><option>Schedule H</option><option>OTC</option></select></label>
             <label className="drug-field"><span>Barcode</span><input value={form.barcode} onChange={(e) => update('barcode', e.target.value)} /></label>
@@ -246,7 +247,61 @@ function UpdateDrugModal({ product, onClose, onSaved, saving, error }) {
 
 export default function DrugList() {
   const queryClient = useQueryClient();
-  const productsQuery = useQuery({ queryKey: ['products'], queryFn: async () => unwrap(await api.get('/products')) });
+  const [searchInput, setSearchInput] = React.useState('');
+  const [search, setSearch] = React.useState('');
+  const [page, setPage] = React.useState(1);
+  const [limit, setLimit] = React.useState(25);
+  const [searchScope, setSearchScope] = React.useState('all');
+  const [view, setView] = React.useState('consolidated');
+  const [quickMenu, setQuickMenu] = React.useState(null);
+  const [actionsOpen, setActionsOpen] = React.useState(false);
+  const [workflow, setWorkflow] = React.useState(null);
+  const [filterOpen, setFilterOpen] = React.useState(false);
+  const [filters, setFilters] = React.useState(initialFilters);
+  const [menuId, setMenuId] = React.useState(null);
+  const [selected, setSelected] = React.useState(null);
+  const [mappingProduct, setMappingProduct] = React.useState(null);
+  const [selectedProductIds, setSelectedProductIds] = React.useState([]);
+  const [isDeletingSelected, setIsDeletingSelected] = React.useState(false);
+
+  // Debounce search query to real backend API call
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const productsQuery = useQuery({
+    queryKey: ['products', search, searchScope, page, limit, filters.schedule, filters.availability, filters.lowStockOnly, filters.expiry, filters.supplier],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      params.append('page', String(page));
+      params.append('limit', String(limit));
+      if (search) params.append('search', search);
+      params.append('searchScope', searchScope);
+      params.append('schedule', filters.schedule);
+      params.append('availability', filters.availability);
+      params.append('lowStockOnly', String(filters.lowStockOnly));
+      params.append('expiry', filters.expiry);
+      if (filters.supplier) params.append('supplier', filters.supplier);
+      const res = await api.get(`/products?${params.toString()}`);
+      return res.data;
+    },
+    placeholderData: (previousData) => previousData,
+  });
+
+  const rawProducts = Array.isArray(productsQuery.data?.data)
+    ? productsQuery.data.data
+    : (Array.isArray(productsQuery.data) ? productsQuery.data : []);
+
+  const pagination = productsQuery.data?.pagination || {
+    total: rawProducts.length,
+    page,
+    limit,
+    totalPages: Math.ceil(rawProducts.length / limit) || 1,
+  };
   const updateProduct = useMutation({
     mutationFn: async ({ product, data }) => {
       const requests = [api.patch(`/products/${product.id}`, {
@@ -282,17 +337,6 @@ export default function DrugList() {
       await queryClient.invalidateQueries({ queryKey: ['products'] });
     },
   });
-  const [search, setSearch] = React.useState('');
-  const [searchScope, setSearchScope] = React.useState('all');
-  const [view, setView] = React.useState('consolidated');
-  const [quickMenu, setQuickMenu] = React.useState(null);
-  const [actionsOpen, setActionsOpen] = React.useState(false);
-  const [workflow, setWorkflow] = React.useState(null);
-  const [filterOpen, setFilterOpen] = React.useState(false);
-  const [filters, setFilters] = React.useState(initialFilters);
-  const [menuId, setMenuId] = React.useState(null);
-  const [selected, setSelected] = React.useState(null);
-  const [mappingProduct, setMappingProduct] = React.useState(null);
   const mapSalt = useMutation({
     mutationFn: ({ productId, saltId }) => api.post(`/products/${productId}/salts`, { saltId }),
     onSuccess: async () => {
@@ -303,7 +347,54 @@ export default function DrugList() {
       setMappingProduct(null);
     },
   });
-  const products = productsQuery.data || [];
+  const deleteSingleProduct = useMutation({
+    mutationFn: async (productId) => {
+      const res = await api.delete(`/products/${productId}`);
+      return res.data;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['products'] }),
+        queryClient.invalidateQueries({ queryKey: ['trash', 'drugs'] }),
+      ]);
+    },
+  });
+
+  const handleDeleteSingle = async (product) => {
+    if (window.confirm(`Move "${product.name}" to trash?`)) {
+      try {
+        await deleteSingleProduct.mutateAsync(product.id);
+        setSelectedProductIds((prev) => prev.filter((id) => id !== product.id));
+      } catch (err) {
+        alert(apiError(err) || 'Failed to move product to trash');
+      }
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!selectedProductIds.length) return;
+    if (window.confirm(`Move ${selectedProductIds.length} selected product(s) to trash?`)) {
+      setIsDeletingSelected(true);
+      try {
+        await Promise.all(selectedProductIds.map((id) => api.delete(`/products/${id}`)));
+        setSelectedProductIds([]);
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['products'] }),
+          queryClient.invalidateQueries({ queryKey: ['trash', 'drugs'] }),
+        ]);
+      } catch (err) {
+        alert(apiError(err) || 'Failed to move selected products to trash');
+      } finally {
+        setIsDeletingSelected(false);
+      }
+    }
+  };
+
+  const products = rawProducts.map((product) => ({
+    ...product,
+    actualRack: product.rack,
+    rack: (product.salts || []).map((mapping) => mapping.salt?.name).filter(Boolean).join(', '),
+  }));
   const suppliers = [...new Set(products.flatMap((product) => (product.suppliers || []).map((item) => item.supplier?.name).filter(Boolean)))];
   const filtered = products.filter((product) => {
     const batch = getBatch(product);
@@ -332,14 +423,55 @@ export default function DrugList() {
   const totalValue = products.reduce((sum, product) => sum + (getBatch(product).price * getBatch(product).stock), 0);
   const outOfStock = products.filter((product) => getBatch(product).stock <= 0).length;
 
+  const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selectedProductIds.includes(p.id));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      const filteredIds = new Set(filtered.map((p) => p.id));
+      setSelectedProductIds((prev) => prev.filter((id) => !filteredIds.has(id)));
+    } else {
+      const newIds = new Set([...selectedProductIds, ...filtered.map((p) => p.id)]);
+      setSelectedProductIds(Array.from(newIds));
+    }
+  };
+
+  const toggleSelectProduct = (productId) => {
+    setSelectedProductIds((prev) =>
+      prev.includes(productId) ? prev.filter((id) => id !== productId) : [...prev, productId]
+    );
+  };
+
   return (
     <div className="drug-list-page" onClick={() => { setMenuId(null); setQuickMenu(null); setActionsOpen(false); }}>
-      <div className="drug-search-bar"><select aria-label="Search scope" value={searchScope} onChange={(e) => setSearchScope(e.target.value)}><option value="all">All</option><option value="salts">Salts</option><option value="rack">Rack</option><option value="hsn">HSN</option><option value="batch">Batch</option></select><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={`Search ${searchScope === 'all' ? 'products, salts, racks, HSN or batches' : searchScope}...`} /><Search size={20} /><kbd>/</kbd></div>
+      <div className="drug-search-bar"><select aria-label="Search scope" value={searchScope} onChange={(e) => setSearchScope(e.target.value)}><option value="all">All</option><option value="salts">Salts</option><option value="rack">Rack</option><option value="hsn">HSN</option><option value="batch">Batch</option></select><input value={searchInput} onChange={(e) => setSearchInput(e.target.value)} placeholder={`Search ${searchScope === 'all' ? 'products, salts, racks, HSN or batches' : searchScope}...`} /><Search size={20} /><kbd>/</kbd></div>
       <div className="drug-filter-bar"><FilterMenu icon={Archive} label="In Stock" value={filters.availability} options={availabilityOptions} open={quickMenu === 'availability'} onToggle={() => setQuickMenu(quickMenu === 'availability' ? null : 'availability')} onChange={(value) => { setFilters((current) => ({ ...current, availability: value })); setQuickMenu(null); }} /><FilterMenu icon={Tag} label="Schedule" value={filters.schedule} options={scheduleOptions} open={quickMenu === 'schedule'} onToggle={() => setQuickMenu(quickMenu === 'schedule' ? null : 'schedule')} onChange={(value) => { setFilters((current) => ({ ...current, schedule: value })); setQuickMenu(null); }} /><FilterMenu icon={Check} label="Expiry Status" value={filters.expiry} options={expiryOptions} open={quickMenu === 'expiry'} onToggle={() => setQuickMenu(quickMenu === 'expiry' ? null : 'expiry')} onChange={(value) => { setFilters((current) => ({ ...current, expiry: value })); setQuickMenu(null); }} /><button type="button" className="drug-filter filter-button" onClick={() => setFilterOpen(true)}><Filter size={14} /> Filter</button></div>
-      <div className="drug-list-actions"><button type="button" onClick={(event) => { event.stopPropagation(); setActionsOpen((value) => !value); }}>Actions <ChevronDown size={14} /></button>{actionsOpen && <div className="drug-actions-menu" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => { setWorkflow('export'); setActionsOpen(false); }}><ArrowDown size={14} /> Export Stock</button><button type="button" onClick={() => { setWorkflow('audit'); setActionsOpen(false); }}><Check size={14} /> Stock Audit</button><button type="button" onClick={() => { setWorkflow('import'); setActionsOpen(false); }}><Plus size={14} /> Import</button></div>}</div>
-      <div className="drug-kpi-grid"><article><span className="kpi-icon blue"><Archive size={19} /></span><div><small>Total Drugs</small><strong>{products.length}</strong></div></article><article><span className="kpi-icon green"><Archive size={19} /></span><div><small>Total Value</small><strong className="value-green">{money(totalValue)}</strong><em>Cost: {money(totalValue * 0.73)}</em></div></article><article><span className="kpi-icon red"><AlertTriangle size={19} /></span><div className="alert-values"><span><b>0</b> expired</span><span><b>{outOfStock}</b> Out of Stock</span></div></article></div>
+      <div className="drug-list-actions">
+        {selectedProductIds.length > 0 && (
+          <button
+            type="button"
+            className="drug-delete-selected-btn"
+            onClick={handleDeleteSelected}
+            disabled={isDeletingSelected}
+          >
+            <Trash2 size={14} />
+            {isDeletingSelected ? 'Moving to Trash...' : `Delete Selected (${selectedProductIds.length})`}
+          </button>
+        )}
+        <button type="button" onClick={(event) => { event.stopPropagation(); setActionsOpen((value) => !value); }}>Actions <ChevronDown size={14} /></button>
+        {actionsOpen && <div className="drug-actions-menu" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => { setWorkflow('export'); setActionsOpen(false); }}><ArrowDown size={14} /> Export Stock</button><button type="button" onClick={() => { setWorkflow('audit'); setActionsOpen(false); }}><Check size={14} /> Stock Audit</button><button type="button" onClick={() => { setWorkflow('import'); setActionsOpen(false); }}><Plus size={14} /> Import</button></div>}
+      </div>
+      <div className="drug-kpi-grid"><article><span className="kpi-icon blue"><Archive size={19} /></span><div><small>Total Products</small><strong>{pagination.total}</strong></div></article><article><span className="kpi-icon green"><Archive size={19} /></span><div><small>Total Value</small><strong className="value-green">{money(totalValue)}</strong><em>Cost: {money(totalValue * 0.73)}</em></div></article><article><span className="kpi-icon red"><AlertTriangle size={19} /></span><div className="alert-values"><span><b>0</b> expired</span><span><b>{outOfStock}</b> Out of Stock</span></div></article></div>
       <div className="drug-tabs"><button type="button" className={view === 'consolidated' ? 'active' : ''} onClick={() => setView('consolidated')}>Consolidated View</button><button type="button" className={view === 'separated' ? 'active' : ''} onClick={() => setView('separated')}>Separated View</button></div>
-      <div className="drug-table-wrap"><table className="drug-table"><thead><tr><th><input type="checkbox" aria-label="Select all drugs" /></th><th>S.NO</th><th>NAME</th><th>RACK</th><th>BATCH</th><th>HSN</th><th>STOCK</th><th>PRICE</th><th>EXPIRY</th><th>SUPPLIER</th><th>ACTIONS</th></tr></thead><tbody>{filtered.map((product, index) => { const batch = getBatch(product); const low = batch.stock < 10; return <tr key={product.id}><td><input type="checkbox" aria-label={`Select ${product.name}`} /></td><td>{index + 1}</td><td><button type="button" className="drug-name-button" onClick={() => setSelected({ ...product, details: true })}><strong>{product.name}</strong>{product.prescriptionOnly && <span className="nrx-badge">NRx</span>}</button></td><td>{product.rack || '—'}</td><td>{batch.batch}</td><td>{product.hsnCode || '—'}</td><td><span className={low ? 'stock-badge low' : 'stock-badge'}>{batch.stock}{low && ' (Low)'}</span></td><td>{money(batch.price)}</td><td className={batch.expiry !== '-' ? 'expiry-near' : ''}>{batch.expiry}</td><td>{product.suppliers?.[0]?.supplier?.name || product.purchaseItems?.[0]?.purchase?.supplier?.name || '—'}</td><td className="drug-action-cell"><button type="button" className="kebab" onClick={(event) => { event.stopPropagation(); setMenuId(menuId === product.id ? null : product.id); }} aria-label={`Actions for ${product.name}`}><MoreVertical size={18} /></button>{menuId === product.id && <div className="drug-action-menu" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setSelected(product)}><Edit3 size={14} /> Edit</button><button type="button"><Tag size={14} /> Add Deal</button><button type="button" onClick={() => { setMappingProduct(product); setMenuId(null); }}><Link2 size={14} /> Map</button></div>}</td></tr>; })}{!filtered.length && <tr><td colSpan="11" className="drug-empty">No drugs match the current filters.</td></tr>}</tbody></table></div>
+      <div className="drug-table-wrap">
+        <table className="drug-table"><thead><tr><th><input type="checkbox" aria-label="Select all drugs" checked={allFilteredSelected} onChange={toggleSelectAll} /></th><th>S.NO</th><th>NAME</th><th>RACK</th><th>BATCH</th><th>HSN</th><th>STOCK</th><th>PRICE</th><th>EXPIRY</th><th>SUPPLIER</th><th>ACTIONS</th></tr></thead><tbody>{filtered.map((product, index) => { const batch = getBatch(product); const low = batch.stock < 10; const isChecked = selectedProductIds.includes(product.id); return <tr key={product.id}><td><input type="checkbox" aria-label={`Select ${product.name}`} checked={isChecked} onChange={() => toggleSelectProduct(product.id)} /></td><td>{(page - 1) * limit + index + 1}</td><td><button type="button" className="drug-name-button" onClick={() => setSelected({ ...product, details: true })}><strong>{product.name}</strong>{product.prescriptionOnly && <span className="nrx-badge">NRx</span>}</button></td><td>{product.rack || '—'}</td><td>{batch.batch}</td><td>{product.hsnCode || '—'}</td><td><span className={low ? 'stock-badge low' : 'stock-badge'}>{batch.stock}{low && ' (Low)'}</span></td><td>{money(batch.price)}</td><td className={batch.expiry !== '-' ? 'expiry-near' : ''}>{batch.expiry}</td><td>{product.suppliers?.[0]?.supplier?.name || product.purchaseItems?.[0]?.purchase?.supplier?.name || '—'}</td><td className="drug-action-cell"><button type="button" className="kebab" onClick={(event) => { event.stopPropagation(); setMenuId(menuId === product.id ? null : product.id); }} aria-label={`Actions for ${product.name}`}><MoreVertical size={18} /></button>{menuId === product.id && <div className="drug-action-menu" onClick={(event) => event.stopPropagation()}><button type="button" onClick={() => setSelected(product)}><Edit3 size={14} /> Edit</button><button type="button"><Tag size={14} /> Add Deal</button><button type="button" onClick={() => { setMappingProduct(product); setMenuId(null); }}><Link2 size={14} /> Map</button><button type="button" className="danger" onClick={() => { setMenuId(null); handleDeleteSingle(product); }}><Trash2 size={14} /> Move to Trash</button></div>}</td></tr>; })}{!filtered.length && <tr><td colSpan="11" className="drug-empty">No products match the current filters.</td></tr>}</tbody></table>
+        <Pagination
+          pagination={pagination}
+          onPageChange={(p) => setPage(p)}
+          onLimitChange={(l) => { setLimit(l); setPage(1); }}
+          pageSizeOptions={[10, 25, 50, 100]}
+          itemLabel="products"
+        />
+      </div>
       {filterOpen && <FilterDrawer filters={filters} suppliers={suppliers} onClose={() => setFilterOpen(false)} onApply={(nextFilters) => { setFilters(nextFilters); setFilterOpen(false); }} />}
       {mappingProduct && <MapSaltModal product={mappingProduct} onClose={() => setMappingProduct(null)} saving={mapSalt.isPending} error={mapSalt.error ? apiError(mapSalt.error) : ''} onMapped={(saltId) => mapSalt.mutate({ productId: mappingProduct.id, saltId })} />}
       {selected?.details ? <DrugDetailsModal product={selected} onClose={() => setSelected(null)} /> : selected && <UpdateDrugModal product={selected} onClose={() => setSelected(null)} saving={updateProduct.isPending} error={updateProduct.error ? apiError(updateProduct.error) : ''} onSaved={(data) => { updateProduct.mutate({ product: selected, data }, { onSuccess: () => setSelected(null) }); }} />}
