@@ -246,6 +246,38 @@ function App() {
         }
       />
       <Route
+        path="/restocks"
+        element={
+          <Guard>
+            <Restocks />
+          </Guard>
+        }
+      />
+      <Route
+        path="/restock"
+        element={
+          <Guard>
+            <Restocks />
+          </Guard>
+        }
+      />
+      <Route
+        path="/modules/restocks"
+        element={
+          <Guard>
+            <Restocks />
+          </Guard>
+        }
+      />
+      <Route
+        path="/modules/restock"
+        element={
+          <Guard>
+            <Restocks />
+          </Guard>
+        }
+      />
+      <Route
         path="/modules/create-debit-note"
         element={<Purchases />}
       />

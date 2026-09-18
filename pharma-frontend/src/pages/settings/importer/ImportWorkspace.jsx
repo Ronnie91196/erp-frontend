@@ -1,12 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Save, AlertCircle, RefreshCw, Layers } from 'lucide-react';
-import api, { unwrap } from '../../../lib/api';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Save, AlertCircle, RefreshCw, Layers, RotateCcw,
+  CheckCircle2, FileSpreadsheet, Database, Eye, ArrowLeft
+} from 'lucide-react';
+import api, { unwrap, apiError } from '../../../lib/api';
 import ImportUpload from './ImportUpload';
-import ImportAnalysisSummary from './ImportAnalysisSummary';
-import ImportReviewGrid from './ImportReviewGrid';
+import ImportReviewStudio from './ImportReviewStudio';
 import ImportProgress from './ImportProgress';
+import ImportConfirmationModal from './ImportConfirmationModal';
+import ImportDetailsModal from './ImportDetailsModal';
+import UndoModal from './UndoModal';
+import RetryModal from './RetryModal';
 
-export default function ImportWorkspace() {
+const ACTIVE_JOB_KEY = 'pharma_active_import_job_id';
+
+export default function ImportWorkspace({ onReviewModeChange }) {
   const [selectedEntityType, setSelectedEntityType] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -15,17 +23,70 @@ export default function ImportWorkspace() {
   const [suppliers, setSuppliers] = useState([]);
   const [errorMessage, setErrorMessage] = useState(null);
 
-  // Background Job & Real Progress Polling
+  // Background Job & Authoritative Polling State
   const [activeJob, setActiveJob] = useState(null);
   const [isCommitting, setIsCommitting] = useState(false);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+
+  // Modal Triggers
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [showUndoModal, setShowUndoModal] = useState(false);
+  const [showRetryModal, setShowRetryModal] = useState(false);
+
   const pollTimerRef = useRef(null);
 
+  // Notify parent and app shell of review mode state for true full-width layout
+  const isReviewMode = Boolean(analysisResult && !activeJob);
+  useEffect(() => {
+    onReviewModeChange?.(isReviewMode);
+    if (isReviewMode) {
+      document.body.classList.add('import-studio-active');
+      window.dispatchEvent(new CustomEvent('pharma:collapse-sidebar', { detail: true }));
+    } else {
+      document.body.classList.remove('import-studio-active');
+      window.dispatchEvent(new CustomEvent('pharma:collapse-sidebar', { detail: false }));
+    }
+    return () => {
+      document.body.classList.remove('import-studio-active');
+      window.dispatchEvent(new CustomEvent('pharma:collapse-sidebar', { detail: false }));
+    };
+  }, [isReviewMode, onReviewModeChange]);
+
+  // ---------------------------------------------------------
+  // 1. INITIALIZATION & REFRESH RECOVERY
+  // ---------------------------------------------------------
   useEffect(() => {
     fetchSuppliers();
+
+    // Check URL search params or localStorage for active job recovery
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlJobId = urlParams.get('jobId') || localStorage.getItem(ACTIVE_JOB_KEY);
+
+    if (urlJobId) {
+      resumeJobTracking(urlJobId);
+    }
+
     return () => {
-      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      stopPolling();
     };
   }, []);
+
+  // Window Focus / Visibility Change Handler for Immediate Sync
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && activeJob?.id) {
+        pollJobStatus(activeJob.id);
+      }
+    };
+
+    window.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
+  }, [activeJob?.id]);
 
   // Synchronize supplier selection when suppliers list loads or analysis completes
   useEffect(() => {
@@ -49,9 +110,90 @@ export default function ImportWorkspace() {
     }
   };
 
-  const handleFileUpload = async (file) => {
-    if (!file) return;
+  // ---------------------------------------------------------
+  // 2. AUTHORITATIVE POLLING ENGINE (750–1000ms, strictly backend)
+  // ---------------------------------------------------------
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
 
+  const pollJobStatus = async (jobId) => {
+    try {
+      const jobData = await unwrap(await api.get(`/import/jobs/${jobId}`));
+      if (jobData) {
+        setActiveJob(jobData);
+
+        // Terminal states check: Stop polling when job is done
+        const terminalStates = ['COMPLETED', 'PARTIAL', 'FAILED', 'UNDONE'];
+        if (terminalStates.includes(jobData.status)) {
+          stopPolling();
+          setIsCommitting(false);
+        }
+      }
+    } catch (pollErr) {
+      console.warn('Job polling notification:', pollErr?.message);
+      if (pollErr?.response?.status === 404) {
+        stopPolling();
+        localStorage.removeItem(ACTIVE_JOB_KEY);
+      }
+    }
+  };
+
+  const startAuthoritativePolling = (jobId) => {
+    stopPolling();
+    localStorage.setItem(ACTIVE_JOB_KEY, jobId);
+
+    // Update URL param without full page reload
+    const url = new URL(window.location);
+    url.searchParams.set('jobId', jobId);
+    window.history.replaceState({}, '', url);
+
+    // 1. Immediate fetch
+    pollJobStatus(jobId);
+
+    // 2. Continuous 850ms interval polling
+    pollTimerRef.current = setInterval(() => {
+      pollJobStatus(jobId);
+    }, 850);
+  };
+
+  const resumeJobTracking = async (jobId) => {
+    try {
+      const jobData = await unwrap(await api.get(`/import/jobs/${jobId}`));
+      if (jobData) {
+        setActiveJob(jobData);
+        const terminalStates = ['COMPLETED', 'PARTIAL', 'FAILED', 'UNDONE'];
+        if (!terminalStates.includes(jobData.status)) {
+          startAuthoritativePolling(jobId);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not resume job tracking:', err);
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+    }
+  };
+
+  // ---------------------------------------------------------
+  // 3. FILE ANALYSIS HANDLER
+  // ---------------------------------------------------------
+  const handleFileUpload = async (fileOrAnalysis) => {
+    if (!fileOrAnalysis) return;
+
+    if (fileOrAnalysis.bills || fileOrAnalysis.detectedEntity) {
+      setAnalysisResult(fileOrAnalysis);
+      setActiveBillIndex(0);
+      if (fileOrAnalysis.resolvedSupplier?.supplierId) {
+        setSelectedSupplierId(fileOrAnalysis.resolvedSupplier.supplierId);
+      } else if (suppliers.length > 0 && !selectedSupplierId) {
+        setSelectedSupplierId(suppliers[0].id);
+      }
+      return;
+    }
+
+    const file = fileOrAnalysis;
     const formData = new FormData();
     formData.append('file', file);
     if (selectedEntityType) {
@@ -63,6 +205,8 @@ export default function ImportWorkspace() {
       setErrorMessage(null);
       setAnalysisResult(null);
       setActiveJob(null);
+      stopPolling();
+      localStorage.removeItem(ACTIVE_JOB_KEY);
 
       const response = await api.post('/import/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -80,14 +224,41 @@ export default function ImportWorkspace() {
       }
     } catch (err) {
       console.error('Document analysis failed:', err);
-      setErrorMessage(err?.response?.data?.message || err?.message || 'Failed to analyze document');
+      setErrorMessage(apiError(err) || 'Failed to analyze document');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleLoadSample = async () => {
+    try {
+      setIsAnalyzing(true);
+      setErrorMessage(null);
+      setAnalysisResult(null);
+      setActiveJob(null);
+      stopPolling();
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+
+      const response = await api.post('/import/analyze-sample');
+      const analysis = unwrap(response);
+      setAnalysisResult(analysis);
+      setActiveBillIndex(0);
+
+      if (analysis.resolvedSupplier?.supplierId) {
+        setSelectedSupplierId(analysis.resolvedSupplier.supplierId);
+      } else if (suppliers.length > 0 && !selectedSupplierId) {
+        setSelectedSupplierId(suppliers[0].id);
+      }
+    } catch (err) {
+      console.error('Sample analysis failed:', err);
+      setErrorMessage(apiError(err) || 'Failed to analyze sample document');
     } finally {
       setIsAnalyzing(false);
     }
   };
 
   // ---------------------------------------------------------
-  // INLINE EDITING HANDLERS — PRESERVES USER EDITS IN COMMIT
+  // 4. INLINE EDITING HANDLERS — PRESERVES USER EDITS IN COMMIT
   // ---------------------------------------------------------
   const updateActiveBillHeader = (field, value) => {
     setAnalysisResult((prev) => {
@@ -187,6 +358,13 @@ export default function ImportWorkspace() {
           value: num,
           status: 'VALID',
         };
+      } else if (field === 'hsnCode' || field === 'hsn') {
+        targetItem.hsnCode = {
+          ...targetItem.hsnCode,
+          raw: rawValue,
+          value: rawValue.trim(),
+          status: 'VALID',
+        };
       }
 
       // Re-evaluate line item readiness
@@ -254,18 +432,16 @@ export default function ImportWorkspace() {
   };
 
   // ---------------------------------------------------------
-  // COMMIT HANDLER WITH REAL BACKGROUND JOB POLLING
+  // 5. COMMIT HANDLER WITH CONFIRMATION MODAL & IDEMPOTENCY
   // ---------------------------------------------------------
-  const handleCommit = async () => {
+  const handleOpenConfirm = () => {
+    setShowConfirmModal(true);
+  };
+
+  const handleExecuteCommit = async () => {
     if (!analysisResult) return;
 
-    const itemCount = analysisResult.detectedEntity === 'PURCHASE'
-      ? (analysisResult.summary?.totalItems || 0)
-      : (analysisResult.records?.length || 0);
-    if (!window.confirm(`Save ${itemCount} reviewed ${analysisResult.detectedEntity || 'data'} record(s) to the database now?`)) return;
-
     const isPurchase = analysisResult.detectedEntity === 'PURCHASE';
-
     let effectiveSupplier = selectedSupplierId;
     let finalBills = analysisResult.bills || [];
 
@@ -275,7 +451,6 @@ export default function ImportWorkspace() {
         effectiveSupplier = suppliers[0].id;
       }
 
-      // Ensure every bill has a valid invoice number
       finalBills = finalBills.map((bill, bIdx) => ({
         ...bill,
         invoiceNumber: bill.invoiceNumber?.trim() || `BILL-${Date.now().toString().slice(-6)}-${bIdx + 1}`,
@@ -287,8 +462,8 @@ export default function ImportWorkspace() {
     try {
       setIsCommitting(true);
       setErrorMessage(null);
+      setShowConfirmModal(false);
 
-      // Post the CURRENT edited state with stable idempotency key
       const idempotencyKey = analysisResult.fileInfo?.hash || `commit_${analysisResult.detectedEntity}_${Date.now()}`;
       const response = await api.post('/import/commit', {
         entityType: analysisResult.detectedEntity || 'PURCHASE',
@@ -308,39 +483,22 @@ export default function ImportWorkspace() {
 
       // Initialize active job state
       setActiveJob({
+        id: jobId,
         jobId,
-        status: 'QUEUED',
+        status: 'IMPORTING',
         percent: 0,
-        totalRecords: commitRes.totalRecords,
-        totalBills: commitRes.totalBills,
+        progressPercent: 0,
+        totalBills: commitRes.totalBills || finalBills.length,
+        totalRows: commitRes.totalRows || analysisResult.fileInfo?.totalSourceRows || 0,
         currentEntity: analysisResult.detectedEntity,
       });
 
-      // Start authoritative progress polling every 400ms
-      pollTimerRef.current = setInterval(async () => {
-        try {
-          const pollRes = await unwrap(await api.get(`/import/jobs/${jobId}`));
-          if (pollRes) {
-            setActiveJob(pollRes);
-
-            // Terminate polling on terminal states
-            if (
-              pollRes.status === 'COMPLETED' ||
-              pollRes.status === 'COMPLETED_WITH_ERRORS' ||
-              pollRes.status === 'FAILED'
-            ) {
-              clearInterval(pollTimerRef.current);
-              setIsCommitting(false);
-            }
-          }
-        } catch (pollErr) {
-          console.error('Job polling error:', pollErr);
-        }
-      }, 400);
+      // Start authoritative progress polling
+      startAuthoritativePolling(jobId);
     } catch (err) {
       console.error('Import commit initiation failed:', err);
       setIsCommitting(false);
-      setErrorMessage(err?.response?.data?.message || err?.message || 'Failed to start import commit');
+      setErrorMessage(apiError(err) || 'Failed to start import commit');
     }
   };
 
@@ -350,30 +508,89 @@ export default function ImportWorkspace() {
     setActiveJob(null);
     setIsCommitting(false);
     setErrorMessage(null);
-    if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+    stopPolling();
+    localStorage.removeItem(ACTIVE_JOB_KEY);
+
+    const url = new URL(window.location);
+    url.searchParams.delete('jobId');
+    window.history.replaceState({}, '', url);
   };
 
-  return (
-    <div className="import-workflow-shell">
-      <div className="import-step-rail" aria-label="Import progress steps">
-        {[
-          ['1', 'Upload', !analysisResult && !activeJob],
-          ['2', 'Analyze', isAnalyzing || Boolean(analysisResult)],
-          ['3', 'Review & edit', Boolean(analysisResult) && !activeJob],
-          ['4', 'Save & verify', Boolean(activeJob)],
-        ].map(([number, label, active], index) => (
-          <div key={label} className={`import-step ${active ? 'active' : ''} ${index === 0 && (analysisResult || activeJob) ? 'done' : ''}`}>
-            <strong>{number}</strong><span className="import-step-label">{label}</span>
-          </div>
-        ))}
+  // Resolve active supplier object
+  const selectedSupplierObj = suppliers.find((s) => s.id === selectedSupplierId);
+
+  // If in Review & Edit mode, render the dedicated ImportReviewStudio
+  if (analysisResult && !activeJob) {
+    return (
+      <div className="import-studio-wrapper">
+        <ImportReviewStudio
+          analysis={analysisResult}
+          suppliers={suppliers}
+          selectedSupplierId={selectedSupplierId}
+          onSupplierChange={setSelectedSupplierId}
+          activeBillIndex={activeBillIndex}
+          setActiveBillIndex={setActiveBillIndex}
+          onUpdateBillHeader={updateActiveBillHeader}
+          onUpdateBillItem={updateActiveBillItem}
+          onUpdateRecordField={updateRecordField}
+          onReset={handleReset}
+          onCommit={handleOpenConfirm}
+          isCommitting={isCommitting}
+        />
+
+        {/* CONFIRMATION MODAL */}
+        {showConfirmModal && (
+          <ImportConfirmationModal
+            analysis={analysisResult}
+            selectedSupplier={selectedSupplierObj}
+            isCommitting={isCommitting}
+            onConfirm={handleExecuteCommit}
+            onClose={() => setShowConfirmModal(false)}
+          />
+        )}
       </div>
-      {/* Upload & Entity Selection Box */}
-      <ImportUpload
-        onFileUpload={handleFileUpload}
-        isAnalyzing={isAnalyzing}
-        selectedEntityType={selectedEntityType}
-        setSelectedEntityType={setSelectedEntityType}
-      />
+    );
+  }
+
+  return (
+    <div className="import-workflow-shell text-slate-800">
+      {/* 5-Step Visual Rail */}
+      <div className="import-step-rail" aria-label="Import workflow steps">
+        {[
+          ['1', 'Select File', !analysisResult && !activeJob],
+          ['2', 'Analyze', isAnalyzing],
+          ['3', 'Review & Edit', Boolean(analysisResult) && !activeJob],
+          ['4', 'Live Progress', Boolean(activeJob) && activeJob.status !== 'COMPLETED' && activeJob.status !== 'UNDONE'],
+          ['5', 'Result & Audit', Boolean(activeJob) && (activeJob.status === 'COMPLETED' || activeJob.status === 'UNDONE')],
+        ].map(([number, label, active], index) => {
+          const isPassed =
+            (index === 0 && (analysisResult || activeJob)) ||
+            (index === 1 && (analysisResult || activeJob)) ||
+            (index === 2 && activeJob) ||
+            (index === 3 && activeJob && (activeJob.status === 'COMPLETED' || activeJob.status === 'UNDONE'));
+
+          return (
+            <div
+              key={label}
+              className={`import-step ${active ? 'active' : ''} ${isPassed ? 'done' : ''}`}
+            >
+              <strong>{number}</strong>
+              <span className="import-step-label">{label}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* STEP 1: Upload Box (when no analysis and no active job) */}
+      {!analysisResult && !activeJob && (
+        <ImportUpload
+          onFileUpload={handleFileUpload}
+          onLoadSample={handleLoadSample}
+          isAnalyzing={isAnalyzing}
+          selectedEntityType={selectedEntityType}
+          setSelectedEntityType={setSelectedEntityType}
+        />
+      )}
 
       {/* Error Alert */}
       {errorMessage && (
@@ -386,74 +603,47 @@ export default function ImportWorkspace() {
         </div>
       )}
 
-      {/* Real Progress Banner during / after commit */}
+      {/* STEP 4 & 5: Live Progress & Result Panel */}
       {activeJob && (
         <ImportProgress
           job={activeJob}
           onReset={handleReset}
+          onOpenDetails={() => setShowDetailsModal(true)}
+          onOpenRetry={() => setShowRetryModal(true)}
+          onOpenUndo={() => setShowUndoModal(true)}
         />
       )}
 
-      {/* Analysis Summary & Column Mappings */}
-      {analysisResult && !activeJob && (
-        <>
-          <ImportAnalysisSummary
-            analysis={analysisResult}
-            suppliers={suppliers}
-            selectedSupplierId={selectedSupplierId}
-            onSupplierChange={setSelectedSupplierId}
-          />
+      {/* DETAILS MODAL */}
+      {showDetailsModal && activeJob && (
+        <ImportDetailsModal
+          job={activeJob}
+          onClose={() => setShowDetailsModal(false)}
+          onOpenRetry={() => setShowRetryModal(true)}
+          onOpenUndo={() => setShowUndoModal(true)}
+        />
+      )}
 
-          {/* Editable Review Grid */}
-          <ImportReviewGrid
-            analysis={analysisResult}
-            activeBillIndex={activeBillIndex}
-            setActiveBillIndex={setActiveBillIndex}
-            onUpdateBillHeader={updateActiveBillHeader}
-            onUpdateBillItem={updateActiveBillItem}
-            onUpdateRecordField={updateRecordField}
-          />
+      {/* UNDO MODAL */}
+      {showUndoModal && activeJob && (
+        <UndoModal
+          job={activeJob}
+          onClose={() => setShowUndoModal(false)}
+          onSuccess={(undoRes) => {
+            pollJobStatus(activeJob.id || activeJob.jobId);
+          }}
+        />
+      )}
 
-          {/* Action Bar (Commit Button) */}
-          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="text-xs text-slate-500">
-              <span className="font-semibold text-slate-800">
-                {analysisResult.detectedEntity === 'PURCHASE'
-                  ? `${analysisResult.bills?.length || 0} Bills (${analysisResult.summary?.totalItems || 0} items)`
-                  : `${analysisResult.records?.length || 0} Records`}
-              </span>{' '}
-              ready for atomic database insertion.
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={handleReset}
-                disabled={isCommitting}
-                className="px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
-              >
-                Discard & Upload New
-              </button>
-
-              <button
-                onClick={handleCommit}
-                disabled={isCommitting}
-                className="flex items-center gap-2 px-6 py-2 bg-[#087c83] hover:bg-[#06666b] disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-xs font-bold rounded-lg transition-all shadow-sm cursor-pointer"
-              >
-                {isCommitting ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    Committing to Database...
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-4 h-4" />
-                    Commit Import to Database
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </>
+      {/* RETRY MODAL */}
+      {showRetryModal && activeJob && (
+        <RetryModal
+          job={activeJob}
+          onClose={() => setShowRetryModal(false)}
+          onStartRetry={(jobId) => {
+            startAuthoritativePolling(jobId);
+          }}
+        />
       )}
     </div>
   );

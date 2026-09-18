@@ -15,7 +15,6 @@ import {
   Share2,
   Users,
   IndianRupee,
-  MapPin,
   MoreVertical,
   History,
   Edit3,
@@ -214,7 +213,7 @@ export default function Customers() {
   const [searchInput, setSearchInput] = React.useState('');
   const [search, setSearch] = React.useState('');
   const [page, setPage] = React.useState(1);
-  const [limit, setLimit] = React.useState(25);
+  const [limit, setLimit] = React.useState(50);
 
   React.useEffect(() => {
     const timer = setTimeout(() => {
@@ -361,7 +360,7 @@ export default function Customers() {
             <Users size={17} />
           </div>
           <span>Total Customers</span>
-          <strong>{customers.length}</strong>
+          <strong>{pagination.total ?? rawCustomers.length}</strong>
         </div>
         <div className="customer-summary-card red">
           <div>
@@ -369,13 +368,6 @@ export default function Customers() {
           </div>
           <span>Outstanding</span>
           <strong>{money(outstanding)}</strong>
-        </div>
-        <div className="customer-summary-card orange">
-          <div>
-            <MapPin size={17} />
-          </div>
-          <span>Local Customers</span>
-          <strong>{customers.length}</strong>
         </div>
       </div>
 

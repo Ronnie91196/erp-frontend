@@ -21,9 +21,14 @@ export function getPharmaPack(item) {
   const doseMatch = name.match(/(\d+\s*DOSES|\d+\s*MDI)/);
   if (doseMatch) return doseMatch[1];
 
-  const stripSize = prod.unitsPerPack || prod.stripSize || prod.packSize;
+  const knownConversion = resolveItemConversion(item);
+  const stripSize = prod.unitsPerPack || prod.stripSize || prod.packSize || (knownConversion && knownConversion > 1 ? knownConversion : null);
   if (form.includes('TAB') || name.includes('TAB') || form.includes('CAP') || name.includes('CAP')) {
-    return stripSize ? `1x${stripSize}` : '1x10';
+    if (stripSize) return `1x${stripSize}`;
+    if (item.packaging?.name && !['TABLET', 'CAPSULE', 'TAB', 'CAP'].includes(item.packaging.name.toUpperCase())) {
+      return item.packaging.name;
+    }
+    return '-';
   }
 
   if (form.includes('SYRUP') || form.includes('SUSP') || form.includes('LIQUID')) return '100ml';
@@ -116,6 +121,120 @@ export function getProductDosageCategory(item) {
  *     Capsules: "1 Strip + 2 Capsules" / "2 Capsules"
  * - All other items: returns numeric quantity unchanged (e.g. "1", "2")
  */
+/**
+ * Resolves the conversion factor (units per strip/pack) for an item.
+ * Returns a number > 1 if a valid multi-unit packaging conversion is known,
+ * or null if unknown / single-unit base packaging.
+ */
+export function resolveItemConversion(item) {
+  if (!item) return null;
+  const prod = item.product || item;
+
+  // 1. Direct item conversionToBase (e.g. from POS cart or stored item)
+  if (item.conversionToBase != null && !isNaN(Number(item.conversionToBase))) {
+    const val = Number(item.conversionToBase);
+    if (val > 1) return Math.round(val);
+  }
+
+  // 2. Linked packaging record (from Prisma ProductPackaging relation)
+  if (item.packaging?.conversionToBase != null && !isNaN(Number(item.packaging.conversionToBase))) {
+    const val = Number(item.packaging.conversionToBase);
+    if (val > 1) return Math.round(val);
+  }
+
+  // 3. Product's default or primary packaging
+  const defaultPkg = prod.packaging?.find?.(p => p.isDefault) || prod.packaging?.[0];
+  if (defaultPkg?.conversionToBase != null && !isNaN(Number(defaultPkg.conversionToBase))) {
+    const val = Number(defaultPkg.conversionToBase);
+    if (val > 1) return Math.round(val);
+  }
+
+  // 4. Fallback: Parse explicit pack string if present on product or packaging (e.g. "1x15", "10's", "10CAP", "1x6")
+  const packStr = String(item.packaging?.name || prod.pack || '').trim().toUpperCase();
+  if (packStr) {
+    const multMatch = packStr.match(/(?:1\s*X\s*|STRIP\s*OF\s*)(\d+)/);
+    if (multMatch && Number(multMatch[1]) > 1) {
+      return Number(multMatch[1]);
+    }
+    const capTabMatch = packStr.match(/^(\d+)\s*(?:CAP|TAB|PILL|S)/);
+    if (capTabMatch && Number(capTabMatch[1]) > 1) {
+      return Number(capTabMatch[1]);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolves the effective packaging-unit quantity for pricing / MRP calculations.
+ * Returns the exact decimal packaging units:
+ * - e.g. 1 strip + 3 tablets in 1x10 -> 1.3 packs
+ * - e.g. 4 loose tablets in 1x10 -> 0.4 packs
+ * - e.g. 2 bottles (conversion 1 or unknown) -> 2 units
+ */
+export function getEffectivePackQuantity(item) {
+  if (!item) return 1;
+
+  const hasExplicitTabs = item.tabs !== undefined && item.tabs !== null && item.tabs !== '';
+  const hasExplicitQty = item.qty !== undefined && item.qty !== null && item.qty !== '';
+  const hasQuantity = item.quantity !== undefined && item.quantity !== null && item.quantity !== '';
+  const hasBaseQuantity = item.baseQuantity !== undefined && item.baseQuantity !== null && item.baseQuantity !== '';
+
+  const conversion = resolveItemConversion(item);
+
+  if (hasExplicitTabs || hasExplicitQty) {
+    const strips = Math.max(0, Number(item.qty || 0));
+    const loose = Math.max(0, Number(item.tabs || 0));
+    if (conversion && conversion > 1) {
+      return strips + (loose / conversion);
+    }
+    return strips + loose;
+  }
+
+  if (conversion && conversion > 1) {
+    if (hasBaseQuantity && !isNaN(Number(item.baseQuantity))) {
+      return Math.max(0, Number(item.baseQuantity)) / conversion;
+    }
+    if (hasQuantity && !isNaN(Number(item.quantity))) {
+      return Math.max(0, Number(item.quantity));
+    }
+  }
+
+  // Single-unit, loose, or non-packaging items
+  if (hasQuantity && !isNaN(Number(item.quantity))) {
+    return Math.max(0, Number(item.quantity));
+  }
+  if (hasBaseQuantity && !isNaN(Number(item.baseQuantity))) {
+    return Math.max(0, Number(item.baseQuantity));
+  }
+
+  return 1;
+}
+
+/**
+ * Calculates the total MRP amount for an item based on its effective packaging quantity.
+ */
+export function getItemMrpAmount(item) {
+  if (!item) return 0;
+  const effectiveQty = getEffectivePackQuantity(item);
+  const mrp = Number(item.batch?.mrp || item.mrp || item.unitPrice || 0);
+  return Math.round(effectiveQty * mrp * 100) / 100;
+}
+
+/**
+ * Format quantity display for Print Slip / Bill:
+ * - Tablet/Capsule/Sachet:
+ *     Known conversion:
+ *       QTY=1, USE=0  -> "1 Strip"
+ *       QTY=2, USE=0  -> "2 Strips"
+ *       QTY=1, USE=2  -> "1 Strip + 2 Tablets"
+ *       QTY=0, USE=2  -> "2 Tablets"
+ *     Unknown/missing conversion:
+ *       baseQuantity=15 -> "15 Tablets" (does NOT fabricate "1 Strip + 5 Tablets")
+ *       baseQuantity=1  -> "1 Tablet"
+ *       baseQuantity=2  -> "2 Tablets"
+ * - All other items: returns numeric quantity unchanged (e.g. "1", "2")
+ */
 export function formatSaleDisplayQuantity(item) {
   if (!item) return '1';
   const category = getProductDosageCategory(item);
@@ -127,31 +246,39 @@ export function formatSaleDisplayQuantity(item) {
     return isNaN(num) ? String(rawQty) : String(Number(num.toFixed(2)));
   }
 
-  const conversion = Math.max(1, Number(
-    item.conversionToBase ||
-    item.packaging?.conversionToBase ||
-    item.product?.packaging?.[0]?.conversionToBase ||
-    10
-  ));
+  const hasExplicitTabs = item.tabs !== undefined && item.tabs !== null && item.tabs !== '';
+  const hasExplicitQty = item.qty !== undefined && item.qty !== null && item.qty !== '';
 
   let strips = 0;
   let loose = 0;
 
-  const hasExplicitTabs = item.tabs !== undefined && item.tabs !== null && item.tabs !== '';
-  const hasExplicitQty = item.qty !== undefined && item.qty !== null && item.qty !== '';
-
   if (hasExplicitTabs || hasExplicitQty) {
     strips = Math.max(0, Math.floor(Number(item.qty || 0)));
     loose = Math.max(0, Math.round(Number(item.tabs || 0)));
-  } else if (item.baseQuantity != null) {
-    const totalUnits = Math.round(Number(item.baseQuantity));
-    strips = Math.floor(totalUnits / conversion);
-    loose = totalUnits % conversion;
   } else {
-    const rawQty = Number(item.quantity || 0);
-    const totalUnits = Math.round(rawQty * conversion);
-    strips = Math.floor(totalUnits / conversion);
-    loose = totalUnits % conversion;
+    const conversion = resolveItemConversion(item);
+
+    if (conversion && conversion > 1) {
+      // Known packaging conversion (e.g. 6, 10, 15, 20)
+      if (item.baseQuantity != null) {
+        const totalUnits = Math.round(Number(item.baseQuantity));
+        strips = Math.floor(totalUnits / conversion);
+        loose = totalUnits % conversion;
+      } else {
+        const rawQty = Number(item.quantity || 0);
+        const totalUnits = Math.round(rawQty * conversion);
+        strips = Math.floor(totalUnits / conversion);
+        loose = totalUnits % conversion;
+      }
+    } else {
+      // Unknown or single-unit packaging: omit strip conversion and format purely in loose/base units
+      const totalUnits = item.baseQuantity != null
+        ? Math.round(Number(item.baseQuantity))
+        : Math.round(Number(item.quantity || 0));
+
+      loose = Math.max(0, totalUnits);
+      strips = 0;
+    }
   }
 
   const parts = [];
@@ -242,11 +369,9 @@ export function generateClassicPrintHtml(sale, userStore = null, printMode = 'ac
   let grandTotal = 0;
 
   if (isMrpMode) {
-    // Magic recalculation for MRP-only mode: calculate strictly from QTY * MRP
+    // Recalculation for MRP-only mode: calculate strictly from effective packaging units * MRP
     subTotal = items.reduce((sum, it) => {
-      const q = Number(it.quantity || it.qty || 1);
-      const m = Number(it.batch?.mrp || it.mrp || it.unitPrice || 0);
-      return sum + (q * m);
+      return sum + getItemMrpAmount(it);
     }, 0);
     discount = 0;
     grandTotal = subTotal;
@@ -269,12 +394,12 @@ export function generateClassicPrintHtml(sale, userStore = null, printMode = 'ac
       const expStr = expDate ? `${expDate.getMonth() + 1}/${String(expDate.getFullYear()).slice(-2)}` : '-';
       const packStr = getPharmaPack(it);
       const batchNo = it.batch?.batchNumber || '-';
-      const qty = Number(it.quantity || it.qty || 1);
       const mrp = Number(it.batch?.mrp || it.mrp || it.unitPrice || 0);
       const rate = Number(it.unitPrice || it.rate || 0);
+      const effectiveQty = getEffectivePackQuantity(it);
       const amount = isMrpMode
-        ? (qty * mrp)
-        : Number(it.totalAmount || (qty * rate));
+        ? getItemMrpAmount(it)
+        : Number(it.totalAmount != null ? it.totalAmount : (effectiveQty * rate));
 
       rowsHtml += `
         <tr>

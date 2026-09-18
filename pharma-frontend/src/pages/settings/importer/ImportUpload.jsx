@@ -1,5 +1,6 @@
 import React, { useRef } from 'react';
 import { UploadCloud, FileSpreadsheet, FileText, CheckCircle2, ChevronDown } from 'lucide-react';
+import api, { unwrap, apiError } from '../../../lib/api';
 
 const ENTITY_OPTIONS = [
   { id: '', label: '⚡ Auto-Detect Entity (Recommended)' },
@@ -12,6 +13,7 @@ const ENTITY_OPTIONS = [
 
 export default function ImportUpload({
   onFileUpload,
+  onLoadSample,
   isAnalyzing,
   selectedEntityType,
   setSelectedEntityType,
@@ -35,6 +37,23 @@ export default function ImportUpload({
 
   const handleDragOver = (e) => {
     e.preventDefault();
+  };
+
+  const handleTriggerSample = async (e) => {
+    e.stopPropagation();
+    if (typeof onLoadSample === 'function') {
+      onLoadSample();
+      return;
+    }
+    try {
+      const res = await api.post('/import/analyze-sample');
+      const analysis = unwrap(res);
+      if (analysis && onFileUpload) {
+        onFileUpload(analysis);
+      }
+    } catch (err) {
+      console.error('Failed to analyze sample file:', err);
+    }
   };
 
   return (
@@ -80,6 +99,8 @@ export default function ImportUpload({
         }`}
       >
         <input
+          id="import-file-input"
+          data-testid="import-file-input"
           ref={fileInputRef}
           type="file"
           accept=".csv,.xlsx,.xls"
@@ -120,6 +141,22 @@ export default function ImportUpload({
           </div>
         )}
       </div>
+
+      {!isAnalyzing && (
+        <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
+          <span className="text-xs text-slate-500 font-medium">
+            Test Data Verification:
+          </span>
+          <button
+            type="button"
+            onClick={handleTriggerSample}
+            id="btn-load-sample-ansh"
+            className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+          >
+            <span>⚡ Load Test File (ANSH Bills 5-in-1)</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

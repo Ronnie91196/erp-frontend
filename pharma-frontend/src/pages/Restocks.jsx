@@ -61,6 +61,7 @@ export default function RestocksPage() {
       } else {
         next[item.productId] = {
           productId: item.productId,
+          batchId: item.batchId || null,
           name: item.name,
           supplierId: item.preferredSupplier?.id || null,
           supplierName: item.preferredSupplier?.name || 'Unassigned',

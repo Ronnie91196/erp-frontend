@@ -120,6 +120,7 @@ const menuGroups = [
     items: [
       { label: 'Purchase List', to: '/purchases', icon: ReceiptText },
       { label: 'Order Notes (Daily)', to: '/order-notes', icon: ClipboardList },
+      { label: 'Auto Restock / PO', to: '/modules/restocks', icon: RefreshCw },
       { label: 'Purchase Returns', to: '/modules/purchase-returns', icon: ArrowLeftRight },
       { label: 'Add Purchase', to: '/purchases/add', icon: Plus },
       { label: 'Trash', to: '/modules/purchases-trash', icon: Trash2 },
@@ -419,6 +420,17 @@ export default function Layout({ children }) {
       setIsCollapsed(false);
     }
   }, [isPurchaseAddRoute]);
+
+  React.useEffect(() => {
+    const handleCollapseEvent = (e) => {
+      if (typeof e.detail === 'boolean') {
+        setIsCollapsed(e.detail);
+        if (e.detail) setOpen(false);
+      }
+    };
+    window.addEventListener('pharma:collapse-sidebar', handleCollapseEvent);
+    return () => window.removeEventListener('pharma:collapse-sidebar', handleCollapseEvent);
+  }, []);
 
   // Click outside to close global search dropdown, profile dropdown, notifications dropdown, and reminders dropdown
   React.useEffect(() => {
